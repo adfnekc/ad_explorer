@@ -73,6 +73,13 @@ type frameSourceProvider interface {
 // of building a backlog of stale frames.
 const defaultUpdateBuffer = 2
 
+// poolBuffers is how many desktop buffers exist. It is one more than the update
+// depth because the session keeps the last frame it encoded, so that a client
+// attaching to a desktop nothing is drawing on can still be repainted. Sizing
+// the pool to the update depth would leave the source with nothing free and it
+// would stop publishing.
+const poolBuffers = defaultUpdateBuffer + 1
+
 // framePool hands out desktop-sized buffers and takes them back.
 //
 // Without it every update would allocate the whole desktop: a 1280x720 frame is
@@ -176,7 +183,7 @@ func grdpFrames(r remote) (FrameSource, error) {
 		remote:  r,
 		cur:     image.NewRGBA(bounds),
 		bounds:  bounds,
-		pool:    newFramePool(defaultUpdateBuffer),
+		pool:    newFramePool(poolBuffers),
 		updates: make(chan Update, defaultUpdateBuffer),
 	}
 	if err := r.OnFrame(s.onFrame); err != nil {

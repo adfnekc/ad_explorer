@@ -49,8 +49,11 @@ type options struct {
 	statsEvery   time.Duration
 	idleEvery    time.Duration
 	frameEvery   time.Duration
-	now          func() time.Time
-	onDone       func(*Session)
+	// reconnectGrace is how long a detached session is kept. A negative value
+	// disables it: the session ends as soon as the browser does.
+	reconnectGrace time.Duration
+	now            func() time.Time
+	onDone         func(*Session)
 }
 
 func (o options) time() time.Time {
@@ -98,6 +101,10 @@ type Session struct {
 
 	done      chan struct{}
 	closeOnce sync.Once
+	// firstAttach is closed by the first successful Attach. Until then there is
+	// no event loop and so none of the timers that normally reap a session,
+	// which is what the attach deadline waits on.
+	firstAttach chan struct{}
 
 	// writeMu serialises transport writes, so a Transport does not have to be
 	// safe for concurrent use.
@@ -109,6 +116,17 @@ type Session struct {
 	files     *fileTransfer
 	attached  bool
 	closed    bool
+	// started is set by the first Attach: the event loop, the frame source and
+	// the input observers run once and outlive any one browser, so a reconnect
+	// must not start them a second time.
+	started bool
+	// epoch changes on every attach and detach. A grace timer records it and
+	// does nothing if it has moved, which is what stops a timer left behind by
+	// one disconnect from ending the session a reconnect recovered.
+	epoch uint64
+	// repaint requests a full frame. The accumulator belongs to the frame loop,
+	// so a reconnect asks for the repaint here rather than seeding it directly.
+	repaint   bool
 	lastInput time.Time
 	reported  map[string]bool
 	startedAt time.Time
@@ -149,21 +167,54 @@ func newSession(id string, cfg rdp.Config, rs remote, opts options) *Session {
 	if opts.frameEvery <= 0 {
 		opts.frameEvery = DefaultFrameInterval
 	}
+	// Zero is the default grace, which is what a caller that does not know about
+	// reconnection gets; a negative value is the explicit "end with the browser".
+	if opts.reconnectGrace == 0 {
+		opts.reconnectGrace = DefaultReconnectGrace
+	}
 	started := opts.now()
 
-	return &Session{
+	s := &Session{
 		id:      id,
 		cfg:     cfg,
 		opts:    opts,
 		remote:  rs,
 		builder: stream.NewBuilder(nil),
 		// Replaced once the frame source reports the real desktop size.
-		acc:       stream.NewAccumulator(image.Rect(0, 0, cfg.Width, cfg.Height), stream.DefaultMaxRects, stream.DefaultFullFraction),
-		quality:   stream.NewQuality(opts.qualityMin, opts.qualityMax, opts.qualityStart),
-		done:      make(chan struct{}),
-		lastInput: started,
-		startedAt: started,
-		statsFrom: statPoint{at: started},
+		acc:         stream.NewAccumulator(image.Rect(0, 0, cfg.Width, cfg.Height), stream.DefaultMaxRects, stream.DefaultFullFraction),
+		quality:     stream.NewQuality(opts.qualityMin, opts.qualityMax, opts.qualityStart),
+		done:        make(chan struct{}),
+		firstAttach: make(chan struct{}),
+		lastInput:   started,
+		startedAt:   started,
+		statsFrom:   statPoint{at: started},
+	}
+
+	// A session that is created and then never attached has no event loop, so
+	// none of the timers that normally reap a session exist for it. A create
+	// whose WebSocket upgrade never completes would otherwise hold a remote
+	// desktop and a session slot until the process restarted.
+	if opts.reconnectGrace >= 0 {
+		go s.expireUnattached(opts.reconnectGrace)
+	}
+	return s
+}
+
+// expireUnattached ends a session the browser never came back to attach to.
+func (s *Session) expireUnattached(grace time.Duration) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		s.mu.Lock()
+		reap := !s.started && !s.closed
+		s.mu.Unlock()
+		if reap {
+			s.shutdown(wsframe.CloseClientGone, nil)
+		}
+	case <-s.firstAttach:
+	case <-s.done:
 	}
 }
 
@@ -190,44 +241,88 @@ func (s *Session) Info() Info {
 //
 // It reports ErrAlreadyAttached if another transport is already on this
 // session: one session is one tab, because two would fight over the pointer and
-// the clipboard.
+// the clipboard. A session whose browser went away is detached rather than
+// ended, so this is also how a reload or a reconnected socket gets the desktop
+// back.
 func (s *Session) Attach(t Transport) error {
 	if t == nil {
 		return ErrClosed
 	}
+
+	// The transport is published under the write lock so a frame from the
+	// already running frame loop cannot overtake the header on a reconnect: the
+	// client has no canvas to size until it has the header.
+	s.writeMu.Lock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.writeMu.Unlock()
 		return ErrClosed
 	}
 	if s.attached {
 		s.mu.Unlock()
+		s.writeMu.Unlock()
 		return ErrAlreadyAttached
+	}
+	first := !s.started
+	s.started = true
+	if first {
+		close(s.firstAttach)
 	}
 	s.attached = true
 	s.transport = t
+	s.epoch++
+	if !first {
+		// The frame loop is already running and the previous client's canvas is
+		// gone, so the next frame it sends has to be the whole desktop.
+		s.repaint = true
+	}
 	s.lastInput = s.opts.time()
 	s.mu.Unlock()
 
-	go s.run()
+	if first {
+		// run sends the header before it starts the frame loop, so nothing can
+		// overtake it on a first attach.
+		s.writeMu.Unlock()
+		go s.run(t)
+		return nil
+	}
+
+	err := t.SendControl(s.header())
+	s.writeMu.Unlock()
+	if err != nil {
+		// The socket died before it could be greeted. Treat it as a browser that
+		// never arrived rather than a client in a session.
+		s.detach(t)
+		return nil
+	}
+	go s.readLoop(t)
 	return nil
 }
 
 // Close ends the session and releases the remote connection.
 func (s *Session) Close() { s.shutdown(wsframe.CloseUserRequested, nil) }
 
-// run is the event loop for one attached browser: everything that flows from
-// the remote towards the client passes through here, on one goroutine, so the
-// writes stay ordered.
-func (s *Session) run() {
-	defer s.finish()
-
-	if err := s.send(wsframe.SessionReady{
+// header is the SessionReady a freshly attached client gets first.
+func (s *Session) header() wsframe.SessionReady {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return wsframe.SessionReady{
 		Width:    s.cfg.Width,
 		Height:   s.cfg.Height,
 		Name:     s.cfg.Name,
 		Protocol: protocolName(s.cfg.Protocol),
-	}); err != nil {
+	}
+}
+
+// run is the event loop for one session: everything that flows from the remote
+// towards the client passes through here, on one goroutine, so the writes stay
+// ordered. It starts once, on the first attach, and outlives individual
+// browsers so a detached session can be re-attached.
+func (s *Session) run(t Transport) {
+	defer s.finish()
+
+	if err := s.send(s.header()); err != nil {
 		return
 	}
 
@@ -235,11 +330,21 @@ func (s *Session) run() {
 	// blocker: that is the difference between a UI that explains itself and one
 	// that shows an empty canvas forever.
 	s.startFrames()
+
+	// A Close may have raced the header. startFrames has already released the
+	// source it resolved in that case, and there is no event loop left to serve.
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return
+	}
+
 	s.startCursor()
 	s.startResize()
 	s.startFiles()
 
-	go s.readLoop()
+	go s.readLoop(t)
 
 	stats := time.NewTicker(s.opts.statsEvery)
 	defer stats.Stop()
@@ -269,17 +374,18 @@ func (s *Session) run() {
 	}
 }
 
-// readLoop turns control messages from the browser into remote input. It runs on
-// its own goroutine because ReceiveControl blocks; everything it learns is
-// handed to rdp, whose input methods are safe to call concurrently.
-func (s *Session) readLoop() {
+// readLoop turns control messages from one browser into remote input. It runs on
+// its own goroutine because Receive blocks; everything it learns is handed to
+// rdp, whose input methods are safe to call concurrently. A read loop is per
+// attachment: one ends when its browser goes, and a reconnect starts another.
+func (s *Session) readLoop(t Transport) {
 	for {
-		msg, err := s.transport.Receive()
+		msg, err := t.Receive()
 		if err != nil {
-			// The browser is gone. There is nothing left to serve, so the
-			// session ends and releases the remote connection. A grace period
-			// that survives a page reload is a later milestone.
-			s.shutdown(wsframe.CloseUserRequested, nil)
+			// The browser is gone. The remote connection and the frame source
+			// stay up for the reconnect grace so a reload can attach to the same
+			// desktop instead of losing it.
+			s.detach(t)
 			return
 		}
 
@@ -292,6 +398,73 @@ func (s *Session) readLoop() {
 			s.handleFileChunk(m.Token, m.Offset, m.Data)
 		}
 	}
+}
+
+// detach ends one browser's attachment without ending the session. The remote
+// connection and the frame source keep running for the reconnect grace, so a
+// reload or a network blip can attach to the same desktop.
+//
+// The transport is closed here, so the closing notice a grace expiry sends has
+// nowhere to go. That is the honest outcome: the client the notice is for is the
+// one that went away, and a client that is still there would have been
+// re-attached before the grace ran out.
+func (s *Session) detach(t Transport) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	if s.transport != t {
+		// A newer transport has already taken over; this read loop is stale.
+		s.mu.Unlock()
+		return
+	}
+	s.attached = false
+	s.epoch++
+	gen := s.epoch
+	grace := s.opts.reconnectGrace
+	s.mu.Unlock()
+
+	_ = t.Close()
+
+	if grace < 0 {
+		// No grace: end as soon as the browser goes, which is what the gateway
+		// did before reconnection existed.
+		s.shutdown(wsframe.CloseUserRequested, nil)
+		return
+	}
+	go s.expireDetached(gen, grace)
+}
+
+// expireDetached ends a session whose browser never came back. The generation
+// makes the timer harmless after a reconnect: a session that recovered must not
+// be ended by the timer left behind by the disconnect it recovered from.
+func (s *Session) expireDetached(gen uint64, grace time.Duration) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		s.mu.Lock()
+		expired := !s.closed && !s.attached && s.epoch == gen
+		s.mu.Unlock()
+		if expired {
+			s.shutdown(wsframe.CloseClientGone, nil)
+		}
+	case <-s.done:
+	}
+}
+
+// attachState reports whether a browser is attached and consumes any pending
+// repaint request. The two are read under one lock so that a reconnect landing
+// between them cannot leave an incremental frame as the first thing a new client
+// sees.
+func (s *Session) attachState() (attached, repaint bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attached = s.attached
+	repaint = s.repaint
+	s.repaint = false
+	return attached, repaint
 }
 
 // handleControl applies one client message. It reports false when the session
@@ -418,22 +591,33 @@ func (s *Session) handleRemoteEvent(ev rdp.Event) bool {
 }
 
 // send writes one control message, ending the session if the transport is gone.
+// With no transport — a session that is detached or already closing — the
+// message is dropped: there is nowhere to write it, and that is not a failure
+// the callers can act on.
 func (s *Session) send(c wsframe.Control) error {
 	s.writeMu.Lock()
 	t := s.transportLocked()
 	if t == nil {
 		s.writeMu.Unlock()
-		return ErrClosed
+		return nil
 	}
 	err := t.SendControl(c)
 	s.writeMu.Unlock()
 	if err != nil {
-		s.shutdown(wsframe.CloseError, err)
+		// A write that fails means this browser is gone, not that the session
+		// should end: the remote desktop is still there and the grace exists so
+		// a reconnect can reach it. Ending the session here would make the
+		// grace useless exactly when it is needed, because a silent drop is
+		// noticed by the next frame's write long before the read deadline.
+		s.detach(t)
 	}
 	return err
 }
 
 // sendFrames writes encoded frames, ending the session if the transport is gone.
+// While the session is detached the frames are dropped: there is no browser to
+// receive them, but that is not a reason to end the session or to stop the
+// frame loop, so a reconnect still finds the desktop.
 func (s *Session) sendFrames(frames []wsframe.Frame) error {
 	if len(frames) == 0 {
 		return nil
@@ -442,22 +626,30 @@ func (s *Session) sendFrames(frames []wsframe.Frame) error {
 	t := s.transportLocked()
 	if t == nil {
 		s.writeMu.Unlock()
-		return ErrClosed
+		return nil
 	}
 	err := t.SendFrames(frames)
 	s.writeMu.Unlock()
 
 	if err != nil {
-		s.shutdown(wsframe.CloseError, err)
+		// As above: the socket is gone, the session is not.
+		s.detach(t)
 		return err
 	}
 	s.recordSent(frames)
 	return nil
 }
 
+// transportLocked returns the transport a write may go to, or nil while the
+// session is detached or closing. It is nil rather than the stale transport so
+// a frame produced during the grace is dropped instead of being written to a
+// socket that is already gone.
 func (s *Session) transportLocked() Transport {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed || !s.attached {
+		return nil
+	}
 	return s.transport
 }
 
@@ -535,6 +727,12 @@ func (s *Session) frameLoop(src FrameSource) {
 	ticker := time.NewTicker(s.opts.frameEvery)
 	defer ticker.Stop()
 
+	// held is the newest desktop the source has published, and it is kept after
+	// it has been encoded rather than released. That is what makes a re-attach
+	// able to repaint: a client that reloaded onto a desktop nothing is drawing
+	// on would otherwise wait for the remote to change something before it saw
+	// anything at all. The pool is one larger than the update buffer so holding
+	// this one cannot starve the source.
 	var held *Update
 	defer func() {
 		if held != nil {
@@ -560,16 +758,28 @@ func (s *Session) frameLoop(src FrameSource) {
 			held = &h
 
 		case <-ticker.C:
+			attached, repaint := s.attachState()
+			if repaint && held != nil {
+				// A re-attached client holds nothing, so its first frame has to
+				// be the whole desktop. Seeding the accumulator with its bounds
+				// is what turns the next frame into a full repaint — the same
+				// thing startFrames does for the first client — because the
+				// promotion lives in the accumulator and not in the encoder.
+				// Without it the next update would go out as a rectangle drawn
+				// onto a canvas the client no longer has.
+				s.acc.Add(held.Image.Bounds())
+			}
 			if held == nil || s.acc.Empty() {
 				continue
 			}
-			keep := s.render(*held)
-			// The buffer belongs to the source again whatever the outcome:
-			// holding it stalls the source, and the encoder has read everything
-			// it needs.
-			held.Release()
-			held = nil
-			if !keep {
+			if !attached {
+				// Nobody is attached to receive a frame, so there is nowhere to
+				// send it. The regions stay accumulated, so the client that
+				// attaches next is handed the desktop as of now rather than a
+				// rectangle drawn onto nothing.
+				continue
+			}
+			if !s.render(*held) {
 				return
 			}
 
@@ -789,6 +999,7 @@ func (s *Session) shutdown(reason string, cause error) {
 		t := s.transport
 		src := s.source
 		s.closed = true
+		s.attached = false
 		s.mu.Unlock()
 
 		if t != nil {

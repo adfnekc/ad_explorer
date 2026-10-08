@@ -40,23 +40,24 @@ func main() {
 }
 
 type options struct {
-	listen        string
-	password      string
-	passwordFile  string
-	fromFlag      bool
-	sessionTTL    time.Duration
-	sessionSecret string
-	maxSessions   int
-	idleTimeout   time.Duration
-	dialTimeout   time.Duration
-	maxFPS        int
-	secureCookie  bool
-	tlsCert       string
-	tlsKey        string
-	trustProxy    bool
-	debug         bool
-	demo          bool
-	showVersion   bool
+	listen         string
+	password       string
+	passwordFile   string
+	fromFlag       bool
+	sessionTTL     time.Duration
+	sessionSecret  string
+	maxSessions    int
+	idleTimeout    time.Duration
+	dialTimeout    time.Duration
+	maxFPS         int
+	reconnectGrace time.Duration
+	secureCookie   bool
+	tlsCert        string
+	tlsKey         string
+	trustProxy     bool
+	debug          bool
+	demo           bool
+	showVersion    bool
 }
 
 func run(args []string) error {
@@ -124,10 +125,11 @@ func run(args []string) error {
 		return fmt.Errorf("-max-fps must be at least 1, not %d", opts.maxFPS)
 	}
 	registry := session.NewRegistry(session.Options{
-		Max:           opts.maxSessions,
-		IdleTimeout:   opts.idleTimeout,
-		FrameInterval: time.Second / time.Duration(opts.maxFPS),
-		Demo:          opts.demo,
+		Max:            opts.maxSessions,
+		IdleTimeout:    opts.idleTimeout,
+		FrameInterval:  time.Second / time.Duration(opts.maxFPS),
+		ReconnectGrace: opts.reconnectGrace,
+		Demo:           opts.demo,
 	})
 
 	assets, err := webui.Assets()
@@ -257,6 +259,10 @@ func parseFlags(args []string) (options, error) {
 		"end a session after this long with no input. Negative disables it")
 	fs.DurationVar(&opts.dialTimeout, "dial-timeout", httpx.DefaultDialTimeout,
 		"how long a connection attempt may take")
+	fs.DurationVar(&opts.reconnectGrace, "reconnect-grace", session.DefaultReconnectGrace,
+		"how long a session whose browser went away is kept, so a reload or a network "+
+			"blip can attach to the same desktop. Negative ends the session as soon as "+
+			"the browser does")
 	fs.IntVar(&opts.maxFPS, "max-fps", 20,
 		"the most frames a second one session will encode. Encoding is the "+
 			"expensive part of a session, so a server that draws in a burst has its "+

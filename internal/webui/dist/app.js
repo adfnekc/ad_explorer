@@ -36,6 +36,22 @@ const MAX_RANGE_PER_REQUEST = 1 << 20;
 // so it lands here and is copied on request.
 const CLIPBOARD_LIMIT = 50;
 
+// Reconnection. A dropped socket is retried against the same session id, because
+// the gateway keeps a detached session alive for its reconnect grace.
+//
+// The window is not assumed: the gateway reports how long it will hold this
+// session, and the client retries for exactly that long. Guessing the default
+// here would give up early against a gateway configured for longer, or keep
+// retrying against one configured for shorter.
+const RECONNECT_MIN_MS = 500;
+const RECONNECT_MAX_MS = 5000;
+
+// The active session id, per tab. A reload is the case this whole feature exists
+// for: the page comes back holding nothing, and this is how it learns which
+// desktop it was showing. sessionStorage rather than localStorage because a
+// session belongs to one tab, and a second tab must not adopt it.
+const SESSION_KEY = 'adx_active_session_v1';
+
 // ---------------------------------------------------------------- state
 
 const state = {
@@ -54,6 +70,21 @@ const state = {
   pingTimer: null,
   lastPing: 0,
   rtt: null,
+
+  // Reconnect bookkeeping. reconnectDeadline is when the retry budget runs out;
+  // zero means no retry is in progress.
+  reconnectTimer: null,
+  reconnectDelay: 0,
+  reconnectDeadline: 0,
+  // graceMs is what the gateway said it would hold this session for.
+  graceMs: 0,
+  // lastCloseCode is why the socket last closed, so the message shown when the
+  // budget runs out can say whether another browser is holding the session.
+  lastCloseCode: 0,
+  // The operator asked to disconnect, or the gateway said the session is over,
+  // so a close is final rather than a blip to retry.
+  deliberateClose: false,
+  sessionEnded: false,
 };
 
 // ---------------------------------------------------------------- elements
@@ -310,6 +341,10 @@ el.cancelHost.addEventListener('click', closeHostForm);
 
 async function connect(host) {
   if (state.session) disconnect();
+  state.deliberateClose = false;
+  state.sessionEnded = false;
+  state.frameCount = 0;
+  state.graceMs = 0;
   el.sessionLabel.textContent = `连接 ${host.name || host.host} …`;
 
   let created;
@@ -334,6 +369,8 @@ async function connect(host) {
   }
 
   state.session = created;
+  state.graceMs = Math.max(0, created.reconnectGraceMs || 0);
+  try { sessionStorage.setItem(SESSION_KEY, created.id); } catch { /* private mode */ }
   el.screen.width = created.width;
   el.screen.height = created.height;
   ctx.fillStyle = '#008080';
@@ -342,13 +379,24 @@ async function connect(host) {
   openSocket(created.id);
 }
 
-function openSocket(id) {
+function openSocket(id, reconnecting) {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${scheme}://${location.host}/api/sessions/${id}/stream`);
   socket.binaryType = 'arraybuffer';
   state.socket = socket;
 
   socket.addEventListener('open', () => {
+    // A reconnect that got through clears the retry budget, so the next blip
+    // gets the full grace again.
+    cancelReconnect();
+    if (reconnecting) note('已重新连接。');
+
+    // The gateway remembers an offer for as long as the session lives, but the
+    // File handles behind it belong to the page. After a reload the browser has
+    // none while the gateway still advertises them, and a paste on the remote
+    // would ask for bytes that can never arrive. An offer the browser cannot
+    // serve is withdrawn rather than left standing.
+    if (state.offered.size === 0) send({ type: 'files.clear' });
     el.sessionLabel.textContent = `已连接 ${state.session.name}`;
     el.cad.disabled = false;
     el.fullscreen.disabled = false;
@@ -377,15 +425,94 @@ function openSocket(id) {
 
   socket.addEventListener('close', (event) => {
     stopPing();
-    const reason = event.reason ? `：${event.reason}` : '';
-    el.sessionLabel.textContent = `连接已结束 (${event.code})${reason}`;
-    note(`会话结束，代码 ${event.code}${reason}`);
-    endSession();
+    // A superseded socket's close says nothing about the socket that replaced
+    // it, so it must not drive reconnection.
+    if (socket !== state.socket) return;
+
+    state.lastCloseCode = event.code;
+
+    // 4002 is the gateway saying the session is gone. Retrying against an id
+    // that no longer exists can only fail, so this one is final.
+    if (event.code === 4002) {
+      state.sessionEnded = true;
+      el.sessionLabel.textContent = '连接已结束：会话已不存在';
+      noteError('session_gone', '会话已经结束；请重新连接主机。');
+      endSession();
+      return;
+    }
+
+    if (state.deliberateClose || state.sessionEnded) {
+      const reason = event.reason ? `：${event.reason}` : '';
+      el.sessionLabel.textContent = `连接已结束 (${event.code})${reason}`;
+      note(`会话结束，代码 ${event.code}${reason}`);
+      endSession();
+      return;
+    }
+    scheduleReconnect();
   });
 
   socket.addEventListener('error', () => {
     noteError('socket_error', 'WebSocket 出错，连接可能已断开。');
   });
+}
+
+// scheduleReconnect retries the same session with a growing delay. It stops once
+// the gateway's grace has run out, because past that the session really is gone
+// and the operator has to be told rather than left watching a dead canvas.
+function scheduleReconnect() {
+  if (!state.session) {
+    endSession();
+    return;
+  }
+
+  // A gateway with the grace turned off will not hold the session, so there is
+  // nothing to wait for.
+  if (state.graceMs <= 0) {
+    el.sessionLabel.textContent = '连接已断开，会话已结束';
+    noteError('session_gone', '连接已断开，且网关不会保留会话；请重新连接主机。');
+    endSession();
+    return;
+  }
+
+  const now = performance.now();
+  if (!state.reconnectDeadline) {
+    state.reconnectDeadline = now + state.graceMs;
+    state.reconnectDelay = RECONNECT_MIN_MS;
+    note('连接断开，正在尝试重新连接 …');
+  }
+  if (now >= state.reconnectDeadline) {
+    // 4001 throughout means something else was holding the session the whole
+    // time, which is worth saying rather than reporting a generic failure: the
+    // operator's other tab is the likely answer, not a broken gateway.
+    if (state.lastCloseCode === 4001) {
+      el.sessionLabel.textContent = '连接已结束：会话被占用';
+      noteError('session_in_use',
+        '重连期间这个会话一直被另一个浏览器占用。一个会话只能有一个画面；请关掉另一个标签页后重新连接。');
+    } else {
+      el.sessionLabel.textContent = '连接已断开，会话已结束';
+      noteError('session_gone', '重连失败，会话已结束；请重新连接主机。');
+    }
+    endSession();
+    return;
+  }
+
+  const id = state.session.id;
+  el.sessionLabel.textContent = '连接断开，正在重新连接 …';
+  const delay = state.reconnectDelay;
+  state.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    openSocket(id, true);
+  }, delay);
+}
+
+function cancelReconnect() {
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+  state.reconnectDeadline = 0;
+  state.reconnectDelay = 0;
 }
 
 function stopPing() {
@@ -394,9 +521,13 @@ function stopPing() {
 
 function endSession() {
   stopPing();
+  cancelReconnect();
   state.socket = null;
   state.session = null;
   state.rtt = null;
+  state.graceMs = 0;
+  state.lastCloseCode = 0;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* private mode */ }
   el.cad.disabled = true;
   el.fullscreen.disabled = true;
   el.disconnect.disabled = true;
@@ -416,6 +547,8 @@ function endSession() {
 }
 
 function disconnect() {
+  state.deliberateClose = true;
+  cancelReconnect();
   if (state.socket) {
     send({ type: 'session.close' });
     state.socket.close();
@@ -514,6 +647,9 @@ function handleControl(message) {
       break;
 
     case 'session.closed':
+      // The gateway has ended the session, so the close that follows is final:
+      // retrying would just fail against a session that no longer exists.
+      state.sessionEnded = true;
       note(`服务端关闭会话：${message.reason}` +
         (message.message ? `（${message.message}）` : ''));
       break;
@@ -1060,7 +1196,7 @@ function showWorkspace() {
   renderHosts();
   renderClipboard();
   renderOffered();
-  refreshSessions();
+  resumeSession();
 }
 
 function showLogin() {
@@ -1085,16 +1221,47 @@ async function start() {
   }
 }
 
-async function refreshSessions() {
+// resumeSession puts back the desktop this tab was showing before it reloaded.
+//
+// It does not delete anything. An earlier version cleaned up sessions with no
+// browser attached on every page load, which was right when a dropped socket
+// ended the session — and is exactly wrong now: the session waiting for this
+// page to come back is detached, and deleting it is the one thing that makes a
+// reload lose the desktop. Abandoned sessions are reaped by the gateway, first
+// by the reconnect grace and then by the idle timeout.
+async function resumeSession() {
+  let id = null;
+  try { id = sessionStorage.getItem(SESSION_KEY); } catch { /* private mode */ }
+  if (!id) return false;
+
+  let mine;
+  let list;
   try {
-    const { sessions } = await api('/api/sessions');
-    // A session left behind by a reload would hold a remote desktop open.
-    for (const stale of sessions || []) {
-      if (!stale.attached) {
-        api(`/api/sessions/${stale.id}`, { method: 'DELETE' }).catch(() => {});
-      }
-    }
-  } catch { /* not signed in yet, or the gateway went away */ }
+    list = await api('/api/sessions');
+    mine = (list.sessions || []).find((s) => s.id === id);
+  } catch {
+    return false; // not signed in yet, or the gateway went away
+  }
+
+  if (!mine) {
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* private mode */ }
+    return false;
+  }
+
+  state.session = { id: mine.id, name: mine.name, width: mine.width, height: mine.height };
+  // The create response carried this, and a reload never saw it. Without it the
+  // first drop after a reload would take the "no grace" path and end the very
+  // session the gateway is still holding.
+  state.graceMs = Math.max(0, list.reconnectGraceMs || 0);
+  if (state.graceMs <= 0) {
+    // The gateway will not hold this session, so resuming it is theatre: the
+    // next drop would end it anyway.
+    note('网关不会保留断开的会话，恢复后一旦断开就会结束。');
+  }
+  el.sessionLabel.textContent = `正在恢复 ${mine.name} …`;
+  note(`页面重新载入，正在恢复 ${mine.name} 的画面。`);
+  openSocket(id, true);
+  return true;
 }
 
 start();

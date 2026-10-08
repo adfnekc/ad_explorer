@@ -22,6 +22,11 @@ const (
 	// and clipboard traffic, not to the client's heartbeat: a tab left open
 	// overnight must not hold a remote desktop hostage.
 	DefaultIdleTimeout = 15 * time.Minute
+	// DefaultReconnectGrace is how long a session with no browser attached is
+	// kept alive, so a reload or a network blip can attach to the same desktop
+	// instead of losing it. It is short relative to the idle timeout because it
+	// exists to cover a reconnect, not to keep an abandoned tab open.
+	DefaultReconnectGrace = 30 * time.Second
 )
 
 // Options configures a Registry.
@@ -31,6 +36,11 @@ type Options struct {
 	// IdleTimeout ends a session with no input for that long. Zero means the
 	// default; a negative value disables it.
 	IdleTimeout time.Duration
+	// ReconnectGrace is how long a session with no browser attached is kept
+	// alive so a reload or a network blip can attach to the same desktop. Zero
+	// means the default; a negative value ends the session as soon as the
+	// transport does, which is what the gateway did before reconnection.
+	ReconnectGrace time.Duration
 	// Quality bounds passed to each session's encoder governor.
 	QualityMin   int
 	QualityMax   int
@@ -91,6 +101,18 @@ func NewRegistry(opts Options) *Registry {
 	}
 }
 
+// ReconnectGrace is how long a detached session is kept, after defaults are
+// applied. The API reports it so a client does not have to guess at the window
+// its session will be held for: a client that assumed the default would give up
+// early against a gateway configured for longer, or hammer a gateway configured
+// for shorter.
+func (r *Registry) ReconnectGrace() time.Duration {
+	if r.opts.ReconnectGrace == 0 {
+		return DefaultReconnectGrace
+	}
+	return r.opts.ReconnectGrace
+}
+
 // Create dials the remote and registers a session.
 //
 // The count of sessions in flight includes the ones still dialling, so a burst
@@ -138,13 +160,14 @@ func (r *Registry) Create(ctx context.Context, cfg rdp.Config) (*Session, error)
 	}
 
 	s := newSession(id, cfg, rs, options{
-		idleTimeout:  r.opts.IdleTimeout,
-		qualityMin:   r.opts.QualityMin,
-		qualityMax:   r.opts.QualityMax,
-		qualityStart: r.opts.QualityStart,
-		frameEvery:   r.opts.FrameInterval,
-		now:          r.opts.Now,
-		onDone:       r.forget,
+		idleTimeout:    r.opts.IdleTimeout,
+		qualityMin:     r.opts.QualityMin,
+		qualityMax:     r.opts.QualityMax,
+		qualityStart:   r.opts.QualityStart,
+		frameEvery:     r.opts.FrameInterval,
+		reconnectGrace: r.opts.ReconnectGrace,
+		now:            r.opts.Now,
+		onDone:         r.forget,
 	})
 
 	r.mu.Lock()

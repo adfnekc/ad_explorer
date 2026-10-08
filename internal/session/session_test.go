@@ -246,6 +246,14 @@ func (f *fakeTransport) Receive() (Message, error) {
 	}
 }
 
+// setSendErr makes every later write fail, which is how a silent drop shows up:
+// the browser is gone but the socket has not said so.
+func (f *fakeTransport) setSendErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendErr = err
+}
+
 // sendChunk delivers a file range the way the real transport does.
 func (f *fakeTransport) sendChunk(token, offset uint32, data []byte) {
 	f.chunks <- ChunkMessage{Token: token, Offset: offset, Data: data}
@@ -789,18 +797,191 @@ func TestSessionClosedEndsEverything(t *testing.T) {
 	}
 }
 
-func TestSessionEndsWhenTheClientDisconnects(t *testing.T) {
+func TestSessionWithNoGraceEndsWhenTheClientDisconnects(t *testing.T) {
 	remote := newFakeRemote()
-	s := newSession("id", testConfig(), remote, options{})
+	s := newSession("id", testConfig(), remote, options{reconnectGrace: -1})
 	tr := newFakeTransport()
 	if err := s.Attach(tr); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
-	// A browser going away ends the session and frees the remote desktop.
+	// A negative grace turns reconnection off, so a browser going away ends the
+	// session and frees the remote desktop, exactly as it did before the grace
+	// period existed.
 	tr.Close()
 
 	waitFor(t, "the session to notice", func() bool { return remote.isClosed() })
+
+	// The reason is the assertion that matters. time.NewTimer with a negative
+	// duration fires at once, so a session with no grace ends either way; only
+	// the reason distinguishes "the operator closed it" from "the browser went
+	// away and nobody came back", and those are different things to be told.
+	closed, ok := tr.firstOfType("session.closed").(wsframe.SessionClosed)
+	if !ok {
+		t.Fatalf("no closing notice was sent: %v", tr.controlTypes())
+	}
+	if closed.Reason != wsframe.CloseUserRequested {
+		t.Errorf("reason = %q, want %q", closed.Reason, wsframe.CloseUserRequested)
+	}
+}
+
+// ---------------------------------------------------------------- reconnection
+
+// newReconnectSession builds a session whose grace a test can wait out and whose
+// frame interval is short enough to see a repaint promptly.
+func newReconnectSession(t *testing.T, grace time.Duration, src FrameSource) (*Session, *fakeRemote) {
+	t.Helper()
+	remote := newFakeRemote()
+	remote.src = src
+	s := newSession("reconnect", testConfig(), remote, options{
+		idleTimeout:    time.Minute,
+		statsEvery:     time.Hour,
+		idleEvery:      time.Hour,
+		frameEvery:     2 * time.Millisecond,
+		reconnectGrace: grace,
+		now:            time.Now,
+	})
+	t.Cleanup(func() { s.Close(); s.finish() })
+	return s, remote
+}
+
+func TestSessionSurvivesADisconnectAndReattaches(t *testing.T) {
+	s, remote := newReconnectSession(t, time.Minute, nil)
+	tr1 := newFakeTransport()
+	if err := s.Attach(tr1); err != nil {
+		t.Fatalf("first Attach: %v", err)
+	}
+
+	// The browser drops. The session stays up, holding the remote desktop.
+	tr1.Close()
+	waitFor(t, "the session to detach", func() bool { return !s.Info().Attached })
+	if remote.isClosed() {
+		t.Fatal("the remote connection was released when the browser went away")
+	}
+
+	// A new socket attaches to the same session and input works again.
+	tr2 := newFakeTransport()
+	if err := s.Attach(tr2); err != nil {
+		t.Fatalf("re-Attach: %v", err)
+	}
+	if !s.Info().Attached {
+		t.Error("the session does not report a browser after re-attach")
+	}
+	waitFor(t, "the header on the new socket", func() bool { return tr2.firstOfType("session.ready") != nil })
+
+	tr2.send(t, wsframe.InputKey{Code: "KeyB", Down: true})
+	waitFor(t, "input after re-attach", func() bool {
+		return strings.Contains(strings.Join(remote.Calls(), " "), "key KeyB down")
+	})
+	if remote.isClosed() {
+		t.Error("the remote connection was released")
+	}
+}
+
+func TestSessionKeepsFramesAcrossAReconnect(t *testing.T) {
+	src := newFakeSource(200, 150)
+	s, _ := newReconnectSession(t, time.Minute, src)
+	tr1 := newFakeTransport()
+	if err := s.Attach(tr1); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	// The first client is given the opening full frame.
+	src.send(image.Rect(0, 0, 1, 1))
+	waitFor(t, "the opening full frame", func() bool {
+		frames := tr1.allFrames(t)
+		return len(frames) >= 1 && frames[0].IsFull()
+	})
+
+	// The browser drops and a region changes while nobody is watching.
+	tr1.Close()
+	waitFor(t, "the session to detach", func() bool { return !s.Info().Attached })
+	src.send(image.Rect(10, 10, 40, 40))
+
+	// The new client holds no canvas, so the first frame it is given has to be
+	// the whole desktop — covering the region that changed while it was away.
+	tr2 := newFakeTransport()
+	if err := s.Attach(tr2); err != nil {
+		t.Fatalf("re-Attach: %v", err)
+	}
+
+	waitFor(t, "a frame on the new socket", func() bool { return len(tr2.allFrames(t)) >= 1 })
+	first := tr2.allFrames(t)[0]
+	if !first.IsFull() {
+		t.Errorf("the first frame after re-attach is not a full repaint: %+v", first)
+	}
+	if first.Rect != image.Rect(0, 0, 200, 150) {
+		t.Errorf("the first frame covers %v, want the whole desktop", first.Rect)
+	}
+}
+
+func TestEveryReconnectStartsWithAFullRepaint(t *testing.T) {
+	// The race the repaint request closes: a reconnect that lands between the
+	// frame loop's check for a browser and its check for a pending repaint must
+	// not let an incremental frame become the first one the new client sees.
+	src := newFakeSource(160, 120)
+	s, _ := newReconnectSession(t, time.Minute, src)
+
+	current := newFakeTransport()
+	if err := s.Attach(current); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	src.send(image.Rect(0, 0, 1, 1))
+	waitFor(t, "the opening frame", func() bool { return len(current.allFrames(t)) >= 1 })
+
+	for cycle := 0; cycle < 4; cycle++ {
+		current.Close()
+		waitFor(t, "the session to detach", func() bool { return !s.Info().Attached })
+
+		current = newFakeTransport()
+		if err := s.Attach(current); err != nil {
+			t.Fatalf("cycle %d: re-Attach: %v", cycle, err)
+		}
+		// A region after the reconnect is enough to produce a frame; it has to
+		// cover the whole desktop.
+		src.send(image.Rect(5, 5, 25, 25))
+
+		waitFor(t, "a frame after the reconnect", func() bool { return len(current.allFrames(t)) >= 1 })
+		if first := current.allFrames(t)[0]; !first.IsFull() {
+			t.Fatalf("cycle %d: the first frame after a reconnect is incremental: %+v", cycle, first)
+		}
+	}
+}
+
+func TestDetachedSessionEndsAfterTheGrace(t *testing.T) {
+	s, remote := newReconnectSession(t, 40*time.Millisecond, nil)
+	tr := newFakeTransport()
+	if err := s.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	tr.Close()
+	waitFor(t, "the grace to expire", func() bool { return remote.isClosed() })
+
+	// The closing notice names the reason the client can explain: the browser is
+	// gone and nobody came back for the desktop.
+	closed, ok := tr.firstOfType("session.closed").(wsframe.SessionClosed)
+	if !ok {
+		t.Fatalf("no SessionClosed was sent: %v", tr.controlTypes())
+	}
+	if closed.Reason != wsframe.CloseClientGone {
+		t.Errorf("reason = %q, want %q", closed.Reason, wsframe.CloseClientGone)
+	}
+}
+
+func TestReconnectGraceDefaultsToTheConstant(t *testing.T) {
+	if DefaultReconnectGrace != 30*time.Second {
+		t.Fatalf("DefaultReconnectGrace = %v, want 30s", DefaultReconnectGrace)
+	}
+
+	// A caller that does not know about reconnection gets the default; only an
+	// explicit negative value turns the grace off. The two are easy to confuse,
+	// which is why the zero case is pinned here.
+	s := newSession("id", testConfig(), newFakeRemote(), options{})
+	t.Cleanup(func() { s.Close(); s.finish() })
+	if s.opts.reconnectGrace != DefaultReconnectGrace {
+		t.Errorf("reconnectGrace = %v, want %v", s.opts.reconnectGrace, DefaultReconnectGrace)
+	}
 }
 
 func TestSessionCloseIsIdempotent(t *testing.T) {
@@ -1926,5 +2107,195 @@ func TestTheNewestFrameSupersedesTheOlder(t *testing.T) {
 	r, g, b := decodeAverage(t, target.Payload)
 	if !(g > r && g > b) {
 		t.Errorf("the frame is not the newer colour: rgb(%.0f,%.0f,%.0f), want green", r, g, b)
+	}
+}
+
+// ---------------------------------------------------------------- reconnect
+
+// attachedReconnectSession is newReconnectSession with a browser already on it,
+// which is what a test that disconnects and re-attaches needs to start from.
+func attachedReconnectSession(t *testing.T, grace time.Duration, src FrameSource) (*Session, *fakeRemote, *fakeTransport) {
+	t.Helper()
+	s, remote := newReconnectSession(t, grace, src)
+	tr := newFakeTransport()
+	if err := s.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	waitFor(t, "the session to start", func() bool { return tr.firstOfType("session.ready") != nil })
+	return s, remote, tr
+}
+
+// isDetached reports whether the session currently has no browser on it.
+func (s *Session) isDetached() bool { return !s.Info().Attached }
+
+func TestAReattachRepaintsAQuiescentDesktop(t *testing.T) {
+	// The decisive case for a reload onto a screen nothing is drawing on. The
+	// source says nothing after the first frame, so a session that keeps no
+	// image has nothing to repaint from and the client waits forever on a blank
+	// canvas. A moving desktop hides this, which is exactly why the demo did.
+	src := newFakeSource(200, 150)
+	s, _, tr := attachedReconnectSession(t, time.Minute, src)
+
+	src.send(image.Rect(0, 0, 200, 150))
+	waitFor(t, "the opening frame", func() bool { return len(tr.allFrames(t)) >= 1 })
+	// Let the loop settle so nothing is in flight when the browser goes.
+	time.Sleep(40 * time.Millisecond)
+
+	tr.Close()
+	waitFor(t, "the detach", s.isDetached)
+
+	// Nothing is sent to the source from here on. Everything the new client
+	// gets has to come from what the session already holds.
+	fresh := newFakeTransport()
+	if err := s.Attach(fresh); err != nil {
+		t.Fatalf("re-attach: %v", err)
+	}
+	waitFor(t, "a repaint with no new update", func() bool { return len(fresh.allFrames(t)) >= 1 })
+
+	first := fresh.allFrames(t)[0]
+	if !first.IsFull() {
+		t.Errorf("the first frame after a re-attach is not a full repaint: %+v", first)
+	}
+	if first.Rect != image.Rect(0, 0, 200, 150) {
+		t.Errorf("the repaint covers %v, want the whole desktop", first.Rect)
+	}
+}
+
+func TestAStaleGraceTimerDoesNotEndASessionThatReconnected(t *testing.T) {
+	// The epoch guard's purpose, and the only interleaving that needs it.
+	//
+	// A session is attached, then detached, then re-attached, then detached
+	// again. The first detach left a timer behind, and it fires while the
+	// session is unattached for the second reason — so the plain "is anybody
+	// attached" test is not enough, and without the epoch the first timer ends a
+	// session whose second grace has barely started. The visible effect is a
+	// reconnect window that shrinks every time the browser blips.
+	// The arithmetic the assertions below depend on, so the window is not a
+	// guess. t0 is the first detach.
+	//
+	//	grace              = 500ms
+	//	first detach       = t0          -> its timer fires at t0+500ms
+	//	second detach      = t0+300ms    -> its timer fires at t0+800ms
+	//	the check          = t0+600ms    -> past the first, short of the second
+	const (
+		grace        = 500 * time.Millisecond
+		betweenGap   = 300 * time.Millisecond
+		checkAfterT2 = 300 * time.Millisecond
+	)
+
+	src := newFakeSource(64, 64)
+	s, _, first := attachedReconnectSession(t, grace, src)
+
+	first.Close()
+	waitFor(t, "the first detach", s.isDetached)
+
+	second := newFakeTransport()
+	if err := s.Attach(second); err != nil {
+		t.Fatalf("re-attach: %v", err)
+	}
+	time.Sleep(betweenGap)
+
+	// Detached again, with its own full grace ahead of it.
+	second.Close()
+	waitFor(t, "the second detach", s.isDetached)
+
+	time.Sleep(checkAfterT2)
+
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		t.Fatal("a grace timer from an earlier detach ended the session, cutting the second grace short")
+	}
+
+	// And the second grace does still end it, so the guard is not simply
+	// disabling the expiry.
+	waitFor(t, "the second grace to expire", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.closed
+	})
+}
+
+func TestAReattachDoesNotStartASecondFrameLoop(t *testing.T) {
+	// Two frame loops would encode every update twice and send it twice. The
+	// started guard is what prevents it, and nothing else in the suite would
+	// notice if it went away.
+	src := newFakeSource(64, 64)
+	s, _, tr := attachedReconnectSession(t, time.Minute, src)
+	time.Sleep(30 * time.Millisecond)
+
+	tr.Close()
+	waitFor(t, "the detach", s.isDetached)
+	fresh := newFakeTransport()
+	if err := s.Attach(fresh); err != nil {
+		t.Fatalf("re-attach: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	before := fresh.batchCount()
+	src.send(image.Rect(0, 0, 32, 32))
+	waitFor(t, "the update", func() bool { return fresh.batchCount() > before })
+
+	// Give a hypothetical second loop time to publish the same regions again.
+	time.Sleep(50 * time.Millisecond)
+	if got := fresh.batchCount() - before; got != 1 {
+		t.Errorf("one update produced %d encodes, want 1: there is more than one frame loop", got)
+	}
+}
+
+func TestASessionNeverAttachedIsReaped(t *testing.T) {
+	// A create whose WebSocket upgrade never completes has no event loop, so
+	// none of the timers that normally reap a session exist for it. Without the
+	// attach deadline it holds a remote desktop and a slot until the process
+	// restarts.
+	remote := newFakeRemote()
+	s := newSession("never", testConfig(), remote, options{
+		reconnectGrace: 60 * time.Millisecond,
+		now:            time.Now,
+	})
+
+	time.Sleep(20 * time.Millisecond)
+	if remote.isClosed() {
+		t.Fatal("the session was reaped before its grace elapsed")
+	}
+	waitFor(t, "the unattached session to be reaped", remote.isClosed)
+	s.finish()
+}
+
+func TestAnAttachedSessionIsNotReapedByTheAttachDeadline(t *testing.T) {
+	src := newFakeSource(64, 64)
+	s, remote, _ := attachedReconnectSession(t, 80*time.Millisecond, src)
+	time.Sleep(200 * time.Millisecond)
+
+	if remote.isClosed() {
+		t.Fatal("the attach deadline ended a session that was attached")
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		t.Fatal("the session was shut down although it was attached")
+	}
+}
+
+func TestWireFailureWhileAttachedDetachesRatherThanEndingTheSession(t *testing.T) {
+	// A silent drop is usually noticed by the next write long before the read
+	// deadline. Ending the session there would make the grace useless exactly
+	// when it is needed, so a write failure has to detach.
+	src := newFakeSource(64, 64)
+	s, remote, _ := attachedReconnectSession(t, time.Minute, src)
+
+	s.mu.Lock()
+	tr := s.transport
+	s.mu.Unlock()
+	tr.(*fakeTransport).setSendErr(errors.New("broken pipe"))
+
+	// The next frame's write fails.
+	src.send(image.Rect(0, 0, 32, 32))
+	waitFor(t, "the detach", s.isDetached)
+
+	if remote.isClosed() {
+		t.Fatal("a write failure ended the session instead of detaching it")
 	}
 }

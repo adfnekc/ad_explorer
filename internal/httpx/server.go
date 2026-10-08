@@ -285,7 +285,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.cfg.Sessions.List()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": s.cfg.Sessions.List(),
+		// Carried here as well as on create, because a client that reloaded
+		// learns which session it was showing from this list and needs to know
+		// how long that session will be held for. Rounded up to the next
+		// millisecond rather than truncated to whole seconds: a grace under a
+		// second would truncate to zero, which the client reads as "no grace".
+		"reconnectGraceMs": graceMillis(s.cfg.Sessions.ReconnectGrace()),
+	})
+}
+
+// graceMillis reports a grace period in milliseconds, rounding up so a positive
+// value can never be reported as zero.
+func graceMillis(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms == 0 && d > 0 {
+		return 1
+	}
+	return ms
 }
 
 type createSessionRequest struct {
@@ -361,6 +379,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"host":   info.Host,
 		"width":  info.Width,
 		"height": info.Height,
+		// How long this session survives without a browser. Zero or less means
+		// it does not, and the client should not retry at all.
+		"reconnectGraceMs": graceMillis(s.cfg.Sessions.ReconnectGrace()),
 	})
 }
 

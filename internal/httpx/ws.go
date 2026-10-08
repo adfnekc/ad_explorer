@@ -64,8 +64,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if err := sess.Attach(transport); err != nil {
 		// The socket exists now, so the client can be told why rather than just
 		// seeing it close. One session is one tab: two viewers would fight over
-		// the pointer and the clipboard.
-		transport.closeWith(closeAlreadyAttached, "this session already has a browser attached")
+		// the pointer and the clipboard, and a reconnect that raced the old
+		// socket's disconnect is told to try again rather than being mistaken
+		// for a second viewer.
+		if errors.Is(err, session.ErrAlreadyAttached) {
+			transport.closeWith(closeAlreadyAttached, "this session already has a browser attached")
+			return
+		}
+		transport.closeWith(closeSessionGone, "the session is no longer available")
 		return
 	}
 }

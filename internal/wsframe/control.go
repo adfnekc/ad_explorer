@@ -60,6 +60,10 @@ const (
 	CloseRemoteEnded    = "remote_ended"
 	CloseReplaced       = "replaced"
 	CloseError          = "error"
+	// CloseClientGone means the browser detached and no new one attached within
+	// the reconnect grace, so the session was ended rather than kept holding a
+	// remote desktop nobody can reach.
+	CloseClientGone = "client_gone"
 )
 
 // Validation errors.

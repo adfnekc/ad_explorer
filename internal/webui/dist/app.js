@@ -78,6 +78,12 @@ const state = {
   reconnectDeadline: 0,
   // graceMs is what the gateway said it would hold this session for.
   graceMs: 0,
+  // What has actually been sent, and what the remote said back. A remote that
+  // reports no pointer position while the counters climb is a remote that is
+  // receiving nothing, and counters that do not climb are the browser not
+  // sending — two different problems with the same symptom on screen.
+  sent: { move: 0, button: 0, key: 0, text: 0 },
+  remoteCursor: null,
   // lastCloseCode is why the socket last closed, so the message shown when the
   // budget runs out can say whether another browser is holding the session.
   lastCloseCode: 0,
@@ -121,6 +127,7 @@ const el = {
   screen: $('screen'),
   keySink: $('keySink'),
   stats: $('stats'),
+  inputTelemetry: $('inputTelemetry'),
   capability: $('capability'),
 
   quality: $('quality'),
@@ -175,6 +182,11 @@ async function api(path, options = {}) {
 
 function send(control) {
   if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return false;
+  switch (control.type) {
+    case 'input.mouse': state.sent[control.action === 'move' ? 'move' : 'button']++; break;
+    case 'input.key': state.sent.key++; break;
+    case 'input.text': state.sent.text++; break;
+  }
   state.socket.send(JSON.stringify(control));
   return true;
 }
@@ -542,6 +554,8 @@ function endSession() {
   el.transfers.replaceChildren();
   renderRemoteFiles([]);
   el.stats.textContent = 'idle';
+  state.remoteCursor = null;
+  renderInputTelemetry();
   setCursorDefault();
   renderHosts();
 }
@@ -594,6 +608,7 @@ function handleControl(message) {
         `${message.fps.toFixed(0)} fps · ${message.kbps.toFixed(0)} KB/s · 质量 ${message.quality}` +
         (message.dropped ? ` · 丢弃 ${message.dropped}` : '') +
         (state.rtt !== null ? ` · ${state.rtt}ms` : '');
+      renderInputTelemetry();
       break;
 
     case 'files.remote':
@@ -638,6 +653,9 @@ function handleControl(message) {
       break;
 
     case 'cursor.pos':
+      // The server's own report of where its pointer ended up. It is the only
+      // cheap confirmation that what was sent arrived.
+      state.remoteCursor = [message.x, message.y];
       break;
 
     case 'cursor.system':
@@ -716,6 +734,21 @@ async function handleFrame(buffer) {
     el.capability.textContent = '';
     note('收到第一帧画面。');
   }
+}
+
+// renderInputTelemetry shows what left the browser and what the remote said
+// back. It exists because "the mouse does nothing" has several causes that look
+// identical on screen: a browser that is not sending (the canvas has no focus,
+// or something is over it), a gateway that is not forwarding, and a remote that
+// is refusing input because its session is not signed in. The counters separate
+// the first from the other two, and the reported position settles the rest.
+function renderInputTelemetry() {
+  const t = el.inputTelemetry;
+  if (!t) return;
+  const s = state.sent;
+  t.textContent =
+    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key}` +
+    (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报');
 }
 
 // ---------------------------------------------------------------- files

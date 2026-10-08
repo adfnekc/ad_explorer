@@ -758,6 +758,15 @@ func (s *Session) frameLoop(src FrameSource) {
 			held = &h
 
 		case <-ticker.C:
+			// A resize replaces the desktop, and the frame kept from before it
+			// describes the old one. Sending it would draw old-sized content
+			// into the top left of a canvas that has already been resized, and
+			// the rest would stay as it was until the source publishes again.
+			if held != nil && held.Image.Bounds() != src.Bounds() {
+				held.Release()
+				held = nil
+			}
+
 			attached, repaint := s.attachState()
 			if repaint && held != nil {
 				// A re-attached client holds nothing, so its first frame has to

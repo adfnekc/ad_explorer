@@ -549,6 +549,9 @@ function endSession() {
 function disconnect() {
   state.deliberateClose = true;
   cancelReconnect();
+  // The label is cleared here rather than by the close handler, because the
+  // close that follows a deliberate disconnect is deliberately ignored.
+  el.sessionLabel.textContent = '未连接';
   if (state.socket) {
     send({ type: 'session.close' });
     state.socket.close();
@@ -968,12 +971,31 @@ function setCursorDefault() {
 
 // ---------------------------------------------------------------- input
 
-function remotePoint(event) {
+// drawnRect is where the desktop actually is on screen, in page coordinates.
+//
+// It is measured rather than assumed. The element's rectangle and the drawn
+// image are the same thing only while the stylesheet keeps them so, and a
+// version of this file assumed they were: the canvas filled the viewport with
+// object-fit: contain, which letterboxes the desktop inside a wider element, and
+// every click was then mapped through two different scales — 0.97 across and
+// 1.48 down in one window. Clicks landed hundreds of remote pixels from where
+// they were aimed, which reads as the mouse not working at all.
+function drawnRect() {
   const rect = el.screen.getBoundingClientRect();
-  const scaleX = el.screen.width / rect.width;
-  const scaleY = el.screen.height / rect.height;
-  const x = Math.round((event.clientX - rect.left) * scaleX);
-  const y = Math.round((event.clientY - rect.top) * scaleY);
+  const scale = Math.min(rect.width / el.screen.width, rect.height / el.screen.height);
+  const width = el.screen.width * scale;
+  const height = el.screen.height * scale;
+  return {
+    left: rect.left + (rect.width - width) / 2,
+    top: rect.top + (rect.height - height) / 2,
+    scale,
+  };
+}
+
+function remotePoint(event) {
+  const drawn = drawnRect();
+  const x = Math.round((event.clientX - drawn.left) / drawn.scale);
+  const y = Math.round((event.clientY - drawn.top) / drawn.scale);
   return {
     x: Math.max(0, Math.min(el.screen.width - 1, x)),
     y: Math.max(0, Math.min(el.screen.height - 1, y)),
@@ -1054,6 +1076,8 @@ function browserShortcut(event) {
   if (event.ctrlKey && event.key === 'w') return true;
   return false;
 }
+
+el.disconnect.addEventListener('click', () => disconnect());
 
 el.cad.addEventListener('click', () => send({ type: 'session.cad' }));
 

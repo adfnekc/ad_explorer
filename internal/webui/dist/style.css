@@ -155,15 +155,25 @@ fieldset {
   min-height: 0;
   position: relative;
   padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--face);
   box-shadow: var(--sunken);
   overflow: hidden;
 }
+/* The element's box is the drawn box. Filling the viewport and letterboxing the
+   content inside it (object-fit: contain) looks the same but makes the element
+   rectangle larger than the desktop, and everything that maps a click into
+   remote coordinates reads that rectangle. Sizing it from the canvas's own
+   dimensions instead means there is nothing to account for. */
 #screen {
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
   background: var(--teal);
   box-shadow: inset 1px 1px 0 #000, 0 0 0 1px var(--face-hi);
 }

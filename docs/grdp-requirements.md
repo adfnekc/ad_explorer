@@ -514,3 +514,76 @@ README 的验收写的是「resizes the framebuffer to 1280x768」，那是一�
 
 一条操作提醒：那台主机上**已有其他用户登录**，连接会弹出「继续会断开对方」的提示。
 测试因此只读不写——不发送任何键盘输入——否则一次误触就会把对方踢下线。
+
+---
+
+## K（P0）`recvDemandActivePDU` 的并发 map 写：进程级崩溃
+
+### 现状
+
+对着真实主机跑网关时，进程反复以不可恢复的方式死掉：
+
+```
+fatal error: concurrent map writes
+
+goroutine 9208 [running]:
+internal/runtime/maps.fatal(...)
+github.com/adfnekc/grdp/protocol/pdu.(*Client).recvDemandActivePDU(0xc00014e760, {0xc0025a43c0, 0x1c9, 0x1c9})
+	…/grdp@v0.8.1/protocol/pdu/pdu.go:225
+reflect.Value.call(...)
+github.com/adfnekc/grdp/emission.(*Emitter).callListeners.func1(...)
+	…/grdp@v0.8.1/emission/emitter.go:226
+created by github.com/adfnekc/grdp/emission.(*Emitter).callListeners in goroutine 9791
+	…/grdp@v0.8.1/emission/emitter.go:201
+```
+
+`pdu.go:225` 是：
+
+```go
+c.serverCapabilities[caps.Type()] = caps
+```
+
+而 `emission/emitter.go:201` 的 `callListeners` **为每个监听各起一个 goroutine**，然后 `WaitGroup` 等它们：
+
+```go
+for _, fn := range listeners {
+	go func(fn reflect.Value) { ... fn.Call(values) }(fn)
+}
+```
+
+### 为什么会同时有两个监听
+
+`Emitter.Once` **是追加而不是替换**（`emitter.go:143` 用 `len(emitter.onces[event])+1` 判断上限），
+而 `recvDemandActivePDU` 至少有三个地方注册它：
+
+1. 连接阶段最初的注册；
+2. `pdu.go:219` —— 连接序列中收到**任何非** demand-active 的 PDU 时重新注册；
+3. `pdu.go:427` —— 收到 **Deactivate All** 时重新注册。
+
+所以一旦注册了两次，下一个 `data` 事件就会**并发**进入 `recvDemandActivePDU` 两次，
+两个 goroutine 同时写 `serverCapabilities`。
+
+Deactivate All 是**会话被另一个连接接管**时服务器发的——连同一台 Windows 主机两次就会触发。
+`fatal error: concurrent map writes` 是运行时致命错误，`recover()` 拦不住，整个进程连同其余会话一起死。
+
+### 建议
+
+`serverCapabilities` 只在这个函数里写、在别处读，所以最小的修法是一个 `sync.Mutex` 或
+`sync.Map`。但更根本的是两件事：
+
+1. **`Once` 的语义**。名字叫 Once，行为却是 append。要么让它替换同名的监听，
+   要么改名，否则每个调用方都要自己保证不重复注册。
+2. **监听器的调用并发性**。一个事件的所有监听并发执行是可以的，
+   但同一事件被注册两次就变成同一处理器并发执行自己。发一次 `data` 就并发跑两遍
+   `recvDemandActivePDU` 不是任何人想要的语义。
+
+### 验收
+
+- 连同一台 Windows 主机两次（第二次把第一次踢掉，触发 Deactivate All），
+  在第一次的连接上继续收 PDU：进程不得崩溃。这是上面那份栈的复现路径。
+- `go test -race` 应当能覆盖：构造两条注册、并发 emit。
+
+### ad_explorer 侧的现状
+
+无法在网关侧绕过：这是进程级致命错误，不是可以 `recover` 的 panic。
+目前只能减少触发面（更少的并发会话、更短的宽限期），但**根因在 grdp**。

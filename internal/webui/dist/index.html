@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AD_EXPLORER</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="app">
+  <div class="titlebar">
+    <span>AD_EXPLORER — Remote Session</span>
+    <span class="spacer"></span>
+    <span class="captions">
+      <button type="button" title="最小化（不适用）" disabled>&minus;</button>
+      <button type="button" title="最大化（不适用）" disabled>&#9633;</button>
+      <button type="button" id="signOut" title="退出控制台">&#10005;</button>
+    </span>
+  </div>
+
+  <!-- ---------- sign in ---------- -->
+  <section class="screen" id="login">
+    <form class="box" id="loginForm">
+      <h1>控制台已锁定</h1>
+      <div class="label">输入控制台密码以继续。这是访问网关本身的密码，不是远端主机的密码。</div>
+      <div class="row">
+        <input id="password" type="password" autocomplete="current-password" autofocus placeholder="控制台密码">
+        <button class="act primary" type="submit" id="loginButton">进入</button>
+      </div>
+      <div class="row"><span class="label" id="loginStatus"></span></div>
+    </form>
+  </section>
+
+  <!-- ---------- workspace ---------- -->
+  <section class="screen" id="workspace" hidden>
+    <div class="rail">
+      <div class="bar">
+        <span class="label">主机</span>
+        <span class="grow"></span>
+        <button class="act" type="button" id="newHost">新建</button>
+      </div>
+      <div class="scroll" id="hostList"></div>
+      <form id="hostForm" hidden>
+        <fieldset>
+          <div class="label">名称</div>
+          <input id="fName" placeholder="web-01" style="width:100%">
+          <div class="label" style="margin-top:6px">地址</div>
+          <input id="fHost" placeholder="10.0.4.21" style="width:100%">
+          <div class="label" style="margin-top:6px">端口</div>
+          <input id="fPort" type="number" value="3389" min="1" max="65535" style="width:100%">
+          <div class="label" style="margin-top:6px">账号</div>
+          <input id="fUser" placeholder="DOMAIN\\user 或 user" style="width:100%" autocomplete="off">
+          <div class="label" style="margin-top:6px">密码</div>
+          <input id="fPassword" type="password" style="width:100%" autocomplete="off">
+          <div class="label" style="margin-top:6px">协议</div>
+          <select id="fProtocol" style="width:100%">
+            <option value="nla">nla（推荐，Windows）</option>
+            <option value="tls">tls</option>
+            <option value="rdp">rdp（无 TLS）</option>
+          </select>
+          <div class="label" style="margin-top:6px">分辨率</div>
+          <select id="fSize" style="width:100%">
+            <option value="1280x720">1280 × 720</option>
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="1024x768">1024 × 768</option>
+            <option value="640x480">640 × 480</option>
+          </select>
+          <div class="row" style="display:flex;gap:6px;margin-top:10px">
+            <button class="act primary" type="submit">连接</button>
+            <button class="act" type="button" id="cancelHost">取消</button>
+            <span class="grow" style="flex:1"></span>
+            <button class="act" type="button" id="deleteHost">删除</button>
+          </div>
+        </fieldset>
+      </form>
+    </div>
+
+    <div class="stage">
+      <div class="bar" id="sessionBar">
+        <span class="label" id="sessionLabel">未连接</span>
+        <span class="grow"></span>
+        <span class="label">分辨率</span>
+        <select id="resolution" disabled>
+          <option value="1280x720">1280 × 720</option>
+          <option value="1920x1080">1920 × 1080</option>
+          <option value="1600x900">1600 × 900</option>
+          <option value="1024x768">1024 × 768</option>
+          <option value="640x480">640 × 480</option>
+        </select>
+        <button class="act" type="button" id="cad" disabled>Ctrl+Alt+Del</button>
+        <button class="act" type="button" id="fullscreen" disabled>全屏</button>
+        <button class="act" type="button" id="disconnect" disabled>断开</button>
+      </div>
+
+      <div id="stage">
+        <div id="viewport">
+          <canvas id="screen" width="1280" height="720"></canvas>
+          <!-- Keyboard and IME input land here. A canvas cannot take focus and
+               cannot host a composition session, so the keys are captured on an
+               invisible input laid over it. -->
+          <input id="keySink" class="keysink" type="text" autocomplete="off"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 aria-label="远程键盘输入">
+          <div id="overlay">
+            <span class="pill" id="stats">idle</span>
+            <span class="pill" id="capability"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bar">
+        <label class="label">质量</label>
+        <input id="quality" type="range" min="1" max="100" value="70" style="width:120px;padding:0">
+        <span class="label" id="qualityValue">70</span>
+        <span class="grow"></span>
+        <span class="label" id="hint">点击画面以捕获键盘</span>
+      </div>
+    </div>
+
+    <div class="dock">
+      <div class="bar">
+        <span class="label">文件</span>
+        <span class="grow"></span>
+        <button class="act" type="button" id="offerFiles" disabled>分享文件</button>
+        <button class="act" type="button" id="clearOffer" disabled>撤销</button>
+      </div>
+      <div class="scroll" style="max-height:200px">
+        <div id="offered"></div>
+        <div id="transfers"></div>
+        <div id="remoteFiles"></div>
+      </div>
+      <input id="filePicker" type="file" multiple hidden>
+
+      <div class="bar">
+        <span class="label">剪贴板</span>
+        <span class="grow"></span>
+        <button class="act" type="button" id="clearClipboard">清空</button>
+      </div>
+      <div class="scroll">
+        <div id="clipboard"></div>
+      </div>
+      <fieldset>
+        <div class="label">发送到远端</div>
+        <textarea id="clipboardOut" rows="3" style="width:100%" placeholder="在此粘贴或输入，然后发送"></textarea>
+        <div class="row" style="display:flex;gap:6px;margin-top:6px">
+          <button class="act" type="button" id="sendClipboard" disabled>发送</button>
+          <button class="act" type="button" id="requestClipboard" disabled>取回远端</button>
+        </div>
+      </fieldset>
+      <div class="bar"><span class="label">通知</span></div>
+      <div class="scroll" style="max-height:200px">
+        <div id="messages"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

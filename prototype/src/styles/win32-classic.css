@@ -1,0 +1,365 @@
+/* =============================================================
+   VARIANT H — WIN32 CLASSIC
+   Windows Classic / Win2000 controls: ButtonFace grey, 2px 3D
+   bevels built from box-shadows, navy title gradient, navy list
+   selection, segmented blue progress blocks, teal desktop inside.
+   ============================================================= */
+:root{
+  --background:#d4d0c8; --foreground:#000000;
+  --card:#d4d0c8; --card-foreground:#000000;
+  --primary:#000080; --primary-foreground:#ffffff;
+  --secondary:#d4d0c8; --secondary-foreground:#000000;
+  --muted:#c0bcb4; --muted-foreground:#404040;
+  --accent:#000080; --accent-foreground:#ffffff;
+  --signal:#008000; --phosphor:#008000;
+  --destructive:#800000;
+  --border:#808080; --rule:#000000; --ring:#000080;
+
+  --radius:0px; --radius-lg:0px; --bw:1px;
+  --topbar-h:34px; --statusbar-h:24px;
+  --rail:264px; --dock:308px;
+
+  --grain-opacity:0; --grid:transparent; --grid-size:0px;
+  --viewport-veil:none;
+  --shadow-lift:0 0 0 1px #000;
+  --shadow-pop:0 0 0 1px #000,2px 2px 0 rgba(0,0,0,.35);
+
+  --remote-bg:#008080;
+  --remote-sheen:transparent;
+  --remote-line:transparent;
+  --remote-fg:#c0c0c0;
+  --remote-fg-dim:#808080;
+  --remote-accent:#ffff00;
+  --remote-ok:#00ff00;
+  --remote-term-bg:#000000;
+  --remote-term-border:#808080;
+  --remote-bar-bg:#c0c0c0;
+  --scanlines:none;
+
+  --sans:Tahoma,"MS Sans Serif","Segoe UI","DejaVu Sans","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"Lucida Console",Consolas,"IBM Plex Mono","DejaVu Sans Mono",monospace;
+
+  /* classic 3D system colours */
+  --face:#d4d0c8; --face-hi:#ffffff; --face-lt:#dfdfdf; --face-sh:#808080; --face-dk:#000000;
+  --raised:inset 1px 1px 0 var(--face-hi),inset -1px -1px 0 var(--face-dk),inset 2px 2px 0 var(--face-lt),inset -2px -2px 0 var(--face-sh);
+  --sunken:inset 1px 1px 0 var(--face-sh),inset -1px -1px 0 var(--face-hi),inset 2px 2px 0 var(--face-dk),inset -2px -2px 0 var(--face-lt);
+}
+
+body{
+  padding:16px;
+  background:#3a6ea5;
+  font-size:12px;
+}
+
+/* ---------- the outer window: classic raised frame ---------- */
+.app{
+  height:calc(100vh - 32px);padding-top:22px;position:relative;
+  background:var(--face);
+  border:2px solid;border-color:var(--face-lt) var(--face-dk) var(--face-dk) var(--face-lt);
+  box-shadow:inset 1px 1px 0 var(--face-hi),inset -1px -1px 0 var(--face-sh),0 0 0 1px #000,6px 6px 0 rgba(0,0,0,.35);
+}
+/* the title bar is drawn rather than marked up */
+.app::before{
+  content:"AD_EXPLORER  \2014  Remote Session";
+  position:absolute;left:0;right:0;top:0;height:22px;z-index:4;
+  display:flex;align-items:center;padding:0 4px;
+  font-family:var(--sans);font-size:11px;font-weight:700;color:#fff;
+  text-shadow:1px 1px 0 rgba(0,0,0,.5);
+  background:linear-gradient(90deg,#0a246a 0%,#3a6ea5 55%,#a6caf0 100%);
+}
+/* caption buttons */
+.topbar::before{
+  content:"\2212   \25A1   \2715";
+  position:absolute;top:-20px;right:5px;z-index:6;
+  font-family:var(--mono);font-size:10px;letter-spacing:3px;color:#000;
+  background:var(--face);padding:1px 5px 2px;
+  box-shadow:var(--raised);
+}
+.topbar{position:relative;z-index:1}
+
+/* =============================================================
+   TOOLBAR
+   ============================================================= */
+.topbar{
+  height:var(--topbar-h);gap:12px;padding:0 8px;
+  border-bottom:1px solid var(--face-sh);
+  background:var(--face);
+  box-shadow:inset 0 1px 0 var(--face-hi);
+}
+.brand{border-right:1px solid var(--face-sh);box-shadow:1px 0 0 var(--face-hi);padding-right:12px;gap:7px}
+.brand__mark{width:16px;height:16px;gap:1px}
+.brand__mark i{background:#000080}
+.brand__mark i:nth-child(3){background:#008000}
+.brand__name{font-family:var(--sans);font-size:11.5px;font-weight:700;letter-spacing:.02em;color:#000}
+.brand__ver{font-family:var(--sans);font-size:10px;color:#404040;letter-spacing:0}
+
+.topbar .label{font-family:var(--sans);font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;color:#000}
+.topbar .label--ink{font-weight:700}
+.topbar .stat{font-family:var(--sans);font-size:11px;letter-spacing:0;text-transform:none;color:#000;font-weight:400}
+.topbar .stat b{color:#000080;font-weight:700}
+.topbar .mono-sm{font-size:11px;color:#000}
+.topbar .rule-v{width:2px;background:var(--face);box-shadow:inset 1px 0 0 var(--face-sh),inset -1px 0 0 var(--face-hi)}
+
+.avatar{
+  width:24px;height:24px;border-radius:0;color:#fff;font-family:var(--sans);font-size:10px;font-weight:700;
+  background:#000080;box-shadow:var(--raised);
+}
+
+/* =============================================================
+   INDICATORS
+   ============================================================= */
+.led,.led--on,.led--live,.led--idle,.led--warn{
+  width:11px;height:11px;border-radius:0;animation:none;
+  background:radial-gradient(circle at 50% 50%,var(--led-c) 0 42%,color-mix(in srgb,var(--led-c) 60%,#000) 100%);
+  box-shadow:var(--sunken);
+}
+.led{--led-c:#808080}
+.led--on{--led-c:#00c000}
+.led--live{--led-c:#00c000}
+.led--idle{--led-c:#a0a0a0}
+.led--warn{--led-c:#e0a000}
+.chip .led,.statusbar .led{width:9px;height:9px}
+
+/* =============================================================
+   CLASSIC CONTROLS
+   ============================================================= */
+.btn{
+  height:24px;padding:0 9px;border:0;border-radius:0;color:#000;
+  font-family:var(--sans);font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;
+  background:var(--face);box-shadow:var(--raised);
+}
+.btn:hover{background:#e6e3de;color:#000}
+.btn:active{transform:none;box-shadow:var(--sunken);padding:1px 8px 0 10px}
+.btn--primary{background:var(--face);color:#000;font-weight:700}
+.btn--accent{background:var(--face);color:#000;font-weight:700}
+.btn--ghost{border:0;box-shadow:none;background:transparent}
+.btn--ghost:hover{box-shadow:none;background:transparent}
+.btn--ghost:active{box-shadow:none;padding:0 9px}
+.topbar .btn--ghost{box-shadow:var(--raised)}
+.topbar .btn--ghost:hover{background:#e6e3de}
+
+.kbd{
+  border:0;border-radius:0;color:#000;
+  background:var(--face);box-shadow:var(--raised);padding:1px 4px 0;
+}
+
+/* segmented toolbar: sunken groove with a raised lit segment */
+.seg{
+  border:0;border-radius:0;padding:2px;gap:2px;overflow:visible;
+  background:var(--face);box-shadow:var(--sunken);
+}
+.seg button{
+  height:20px;border:0;border-radius:0;padding:0 8px;color:#000;
+  font-family:var(--sans);font-size:11px;letter-spacing:0;text-transform:none;
+  background:transparent;box-shadow:none;
+}
+.seg button:hover:not([aria-selected="true"]){box-shadow:var(--raised)}
+.seg button[aria-selected="true"]{background:var(--face);box-shadow:var(--raised);font-weight:700}
+
+.field{
+  height:22px;border:0;border-radius:0;padding:0 4px;gap:4px;
+  background:#fff;box-shadow:var(--sunken);
+}
+.field:focus-within{box-shadow:var(--sunken),0 0 0 1px #000080}
+.field input{font-family:var(--sans);font-size:11px;color:#000}
+.field__sigil{color:#404040;font-size:10px}
+
+.chip{
+  height:18px;border:0;border-radius:0;color:#000;padding:0 5px;gap:4px;
+  font-family:var(--sans);font-size:10.5px;font-weight:400;letter-spacing:0;text-transform:none;
+  background:var(--face);box-shadow:var(--raised);
+}
+.chip--rdp{color:#fff;background:#000080}
+.chip--vnc{background:#c0c0c0;border-style:none;color:#000}
+.chip--ok{background:#c0c0c0;color:#006000}
+.chip--live{background:#c0c0c0;color:#006000}
+
+/* =============================================================
+   RAIL
+   ============================================================= */
+.rail{border-right:1px solid var(--face-sh);background:var(--face);box-shadow:inset -1px 0 0 var(--face-hi)}
+.rail__head{padding:8px;border-bottom:2px ridge var(--face);box-shadow:none}
+.rail__title .label{font-weight:700;font-size:11px}
+.rail__group{padding:9px 8px 4px}
+.rail__group .label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#000080}
+.rail__group::after{background:var(--face);box-shadow:inset 0 1px 0 var(--face-sh),inset 0 -1px 0 var(--face-hi);height:2px}
+.rail__foot{padding:8px;border-top:2px ridge var(--face);box-shadow:none}
+
+.host{
+  display:grid;grid-template-columns:none;grid-auto-flow:column;grid-template-columns:11px minmax(0,1fr) auto;
+  gap:8px;align-items:center;padding:5px 6px;margin:1px 4px;
+  border-left:2px solid transparent;border-radius:0;background:transparent;box-shadow:none;
+}
+.host:hover{background:#e6e3de}
+.host[data-active="true"]{
+  background:#000080;border-left:2px solid #000080;color:#fff;
+  box-shadow:1px 1px 0 var(--face-sh),inset 1px 1px 0 rgba(255,255,255,.25);
+}
+.host[data-active="true"] .host__name,
+.host[data-active="true"] .host__meta,
+.host[data-active="true"] .host__rtt,
+.host[data-active="true"] .host__rtt b{color:#fff}
+.host[data-active="true"] .led{box-shadow:0 0 0 1px #fff}
+.host[data-active="true"] .chip--rdp{background:#c0c0c0;color:#000}
+.host__name{font-family:var(--sans);font-size:11.5px;font-weight:400;color:#000}
+.host__meta{font-family:var(--sans);font-size:10.5px;color:#404040;margin-top:1px}
+.host__rtt{font-family:var(--sans);font-size:10.5px;color:#404040}
+.host__rtt b{font-weight:700;color:#000}
+
+/* =============================================================
+   STAGE
+   ============================================================= */
+.stage{background:var(--face)}
+.tabs{border-bottom:1px solid var(--face-sh);padding:4px 6px 0;gap:2px;background:var(--face);box-shadow:inset 0 -1px 0 var(--face-hi)}
+.tab{
+  height:24px;padding:0 10px;border:0;border-radius:2px 2px 0 0;background:var(--face);
+  font-family:var(--sans);font-size:11px;color:#000;
+  box-shadow:inset 1px 1px 0 var(--face-hi),inset -1px 0 0 var(--face-sh),inset 0 -1px 0 var(--face-sh);
+}
+.tab:first-child{border-left:0}
+.tab[aria-selected="true"]{
+  background:var(--face);font-weight:700;color:#000;
+  box-shadow:inset 1px 1px 0 var(--face-hi),inset -1px 0 0 var(--face-hi),inset 1px 0 0 var(--face-hi);
+  height:26px;margin-top:-2px;
+}
+.tab:hover:not([aria-selected="true"]){background:#e6e3de}
+
+.viewbar{
+  padding:5px 8px;border-bottom:1px solid var(--face-sh);
+  background:var(--face);box-shadow:inset 0 1px 0 var(--face-hi);
+}
+.viewbar__addr{font-family:var(--mono);font-size:11.5px;color:#000}
+.viewbar .label{font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;color:#000}
+.viewbar .mono-sm{font-family:var(--mono);font-size:11px;color:#000}
+
+/* client area: sunken panel holding the session */
+.viewport{padding:4px;background:var(--face);box-shadow:var(--sunken)}
+.screen{border:0;border-radius:0;box-shadow:inset 1px 1px 0 #000,inset -1px -1px 0 var(--face-hi),0 0 0 2px var(--face)}
+.reg{display:none}
+
+/* the remote host is running Windows 95 */
+.desktop{background:#008080;background-image:none;padding:22px 30px 34px}
+.term{border:1px solid #000;border-radius:0;background:#000;box-shadow:2px 2px 0 rgba(0,0,0,.4)}
+.term__bar{height:20px;background:linear-gradient(90deg,#000080,#1084d0);border-bottom:0}
+.term__title{font-family:var(--sans);font-size:11px;font-weight:700;color:#fff;letter-spacing:0;text-transform:none}
+.term__meta{font-family:var(--sans);font-size:10px;color:#c0c0c0}
+.term__body{font-family:var(--mono);font-size:12px;line-height:1.45;color:#c0c0c0}
+.term__body .p{color:#00ff00}
+.term__body .g{color:#00ff00}
+.term__body .d{color:#808080}
+.caret{background:#c0c0c0}
+.deskbar{
+  height:26px;background:#c0c0c0;border-top:2px solid #dfdfdf;color:#000;
+  font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;
+  box-shadow:inset 0 1px 0 #fff;
+}
+.deskbar::before{content:"Start";font-weight:700;padding:3px 8px;background:#c0c0c0;box-shadow:var(--raised);margin-right:6px}
+
+.hud__b{
+  height:20px;border:0;border-radius:0;color:#000;font-family:var(--sans);font-size:10.5px;
+  background:var(--face);box-shadow:var(--raised);backdrop-filter:none;
+}
+.hud__b s{color:#000080;font-weight:700}
+.spark path{stroke:#000080}
+
+.notice{
+  border:0;border-radius:0;color:#000;font-family:var(--sans);font-size:11px;
+  background:var(--face);box-shadow:var(--raised);
+}
+.notice b{color:#000080}
+
+/* =============================================================
+   CONTROL BAR + STATUS BAR
+   ============================================================= */
+.controls{
+  padding:5px 8px;gap:6px;border-top:1px solid var(--face-sh);
+  background:var(--face);box-shadow:inset 0 1px 0 var(--face-hi);
+}
+.controls__group{gap:4px}
+.controls .label{font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;color:#000}
+.controls .rule-v{width:2px;background:var(--face);box-shadow:inset 1px 0 0 var(--face-sh),inset -1px 0 0 var(--face-hi)}
+.controls .btn{font-size:11px}
+
+.dock{border-left:1px solid var(--face-sh);background:var(--face);box-shadow:inset 1px 0 0 var(--face-hi)}
+.dock__tabs{border-bottom:2px ridge var(--face);background:var(--face)}
+.dock__tabs button{
+  flex:0 1 auto;height:26px;padding:0 12px;border-right:0;border-bottom:0;margin:2px 2px 0;
+  font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;color:#000;
+  background:transparent;box-shadow:none;
+}
+.dock__tabs button[aria-selected="true"]{font-weight:700;background:var(--face);box-shadow:var(--raised)}
+.dock__head .label{font-size:11px;font-weight:700;color:#000}
+.dock__head::after{height:2px;background:var(--face);box-shadow:inset 0 1px 0 var(--face-sh),inset 0 -1px 0 var(--face-hi)}
+
+.drop{
+  border:0;border-radius:0;background:#fff;box-shadow:var(--sunken);
+}
+.drop:hover{background:#ffffe1}
+.drop .label{font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;color:#404040}
+.drop__icon{width:24px;height:24px;border:0;border-radius:0;background:var(--face);box-shadow:var(--raised);font-size:12px;color:#000}
+
+.xfer{border-bottom:1px solid var(--face-sh);padding-bottom:8px}
+.xfer__row{gap:6px}
+.xfer__name{font-family:var(--sans);font-size:11px;color:#000}
+.xfer__pct,.xfer__meta{font-family:var(--sans);font-size:10.5px;color:#404040}
+
+/* the classic block progress bar */
+.bar{
+  height:18px;border:0;border-radius:0;padding:2px;overflow:hidden;
+  background:var(--face);box-shadow:var(--sunken);
+}
+.bar i{background:repeating-linear-gradient(90deg,#000080 0 8px,transparent 8px 10px)}
+.bar i.done{background:repeating-linear-gradient(90deg,#008000 0 8px,transparent 8px 10px)}
+.bar i.queued{background:transparent}
+
+.clip{border:0;border-radius:0;background:#fff;box-shadow:var(--sunken)}
+.clip__text{font-family:var(--mono);font-size:11px;color:#000}
+.clip__meta{font-family:var(--sans);font-size:10.5px;color:#404040}
+.clip .btn{box-shadow:var(--raised)}
+
+.meter{font-family:var(--sans);font-size:11px;color:#000}
+.meter .meter__track{height:14px;border:0;border-radius:0;padding:2px;background:var(--face);box-shadow:var(--sunken)}
+.meter .meter__track i{background:repeating-linear-gradient(90deg,#000080 0 8px,transparent 8px 10px)}
+
+.statusbar{
+  border-top:0;color:#000;background:var(--face);
+  box-shadow:inset 0 2px 0 var(--face-hi),inset 0 1px 0 var(--face-lt);
+  font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;
+  padding:0 4px;
+}
+.statusbar>span{height:18px;display:inline-flex;align-items:center;padding:0 6px;box-shadow:var(--sunken);margin:0 2px}
+.statusbar .dim{color:#404040}
+.statusbar .rule-v{display:none}
+.statusbar b{color:#000080;font-weight:700}
+.statusbar .push{box-shadow:none;margin-left:auto}
+
+/* =============================================================
+   DIALOGS
+   ============================================================= */
+.lock{background:rgba(0,0,0,.25)}
+.lock__card{
+  width:min(400px,90vw);border:0;border-radius:0;padding:0 0 14px;gap:12px;
+  background:var(--face);
+  box-shadow:var(--raised),0 0 0 1px #000,8px 8px 0 rgba(0,0,0,.35);
+}
+.lock__card::before{
+  content:"Console Locked";display:flex;align-items:center;height:20px;padding:0 4px;margin:2px 2px 0;
+  font-family:var(--sans);font-size:11px;font-weight:700;color:#fff;
+  background:linear-gradient(90deg,#000080,#1084d0);
+}
+.lock__brand{padding:0 12px}
+.lock__card>.hair,.lock__card>.pin,.lock__card>.field,.lock__card>.lock__row{margin-left:12px;margin-right:12px}
+.lock__mark{width:18px;height:18px;border-radius:0;background:#000080;gap:1px}
+.lock__mark i{display:none}
+.lock__mark::after{content:"";width:9px;height:9px;background:#00ff00}
+.lock__title{font-family:var(--sans);font-size:12px;font-weight:700;color:#000;text-transform:none;letter-spacing:0}
+.pin{gap:4px}
+.pin i{height:28px;border:0;border-radius:0;background:#fff;box-shadow:var(--sunken)}
+.pin i[data-filled="true"]{background:#e0e0ff}
+.pin i b{width:8px;height:8px;border-radius:0;background:#000080;box-shadow:none}
+
+.toast{
+  border:0;border-radius:0;color:#000;font-family:var(--sans);font-size:11px;text-transform:none;letter-spacing:0;
+  background:#ffffe1;box-shadow:0 0 0 1px #000,2px 2px 0 rgba(0,0,0,.35),var(--raised);
+}
+.toast s{color:#000080}

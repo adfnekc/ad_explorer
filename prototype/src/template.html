@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN" data-variant="{{VARIANT}}">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{TITLE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+{{FONTS}}
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+{{BODY}}
+
+<!-- ══════════════ LOCK OVERLAY (access control) ══════════════ -->
+<div class="lock" id="lockOverlay" data-open="false" role="dialog" aria-modal="true" aria-label="控制台已锁定">
+  <div class="lock__card">
+    <div class="lock__brand">
+      <span class="lock__mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <div>
+        <div class="lock__title">CONSOLE LOCKED</div>
+        <div class="label">输入访问密码以继续</div>
+      </div>
+    </div>
+
+    <hr class="hair" />
+
+    <div class="pin" id="pin">
+      <i data-filled="false"><b></b></i><i data-filled="false"><b></b></i><i data-filled="true"><b></b></i>
+      <i data-filled="true"><b></b></i><i data-filled="true"><b></b></i><i data-filled="false"><b></b></i>
+    </div>
+
+    <label class="field">
+      <span class="field__sigil">›</span>
+      <input type="password" placeholder="访问密码" />
+    </label>
+
+    <div class="lock__row">
+      <span class="label">5 次失败后锁定 10 分钟</span>
+      <button class="btn btn--accent" id="unlockBtn">UNLOCK</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" data-open="false"><s>◉</s><span id="toastMsg">READY</span></div>
+
+<script>
+{{JS}}
+</script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+/* AD_EXPLORER — Win32 Classic.
+   The palette and the bevels are the ones the prototype settled on; see
+   prototype/src/styles/win32-classic.css for the full set. */
+:root {
+  --face: #d4d0c8;
+  --face-hi: #ffffff;
+  --face-lt: #dfdfdf;
+  --face-sh: #808080;
+  --face-dk: #000000;
+  --navy: #000080;
+  --teal: #008080;
+
+  --raised: inset 1px 1px 0 var(--face-hi), inset -1px -1px 0 var(--face-dk),
+    inset 2px 2px 0 var(--face-lt), inset -2px -2px 0 var(--face-sh);
+  --sunken: inset 1px 1px 0 var(--face-sh), inset -1px -1px 0 var(--face-hi),
+    inset 2px 2px 0 var(--face-dk), inset -2px -2px 0 var(--face-lt);
+
+  --mono: "Consolas", "Lucida Console", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font: 12px Tahoma, "MS Sans Serif", "Segoe UI", sans-serif;
+  color: #000;
+  background: #3a6ea5;
+}
+
+button { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+/* ---------- window chrome ---------- */
+#app {
+  position: absolute;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  background: var(--face);
+  border: 2px solid;
+  border-color: var(--face-lt) var(--face-dk) var(--face-dk) var(--face-lt);
+  box-shadow: inset 1px 1px 0 var(--face-hi), inset -1px -1px 0 var(--face-sh),
+    0 0 0 1px #000, 6px 6px 0 rgba(0, 0, 0, 0.35);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 4px;
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
+  background: linear-gradient(90deg, #0a246a 0%, #3a6ea5 55%, #a6caf0 100%);
+}
+.titlebar .spacer { flex: 1; }
+.titlebar .captions { display: flex; gap: 2px; }
+.titlebar .captions button {
+  width: 18px;
+  height: 15px;
+  line-height: 1;
+  background: var(--face);
+  border: 0;
+  box-shadow: var(--raised);
+  cursor: default;
+}
+
+/* ---------- generic controls ---------- */
+button.act, .btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  background: var(--face);
+  box-shadow: var(--raised);
+  cursor: pointer;
+}
+button.act:active, .btn:active { box-shadow: var(--sunken); padding: 1px 9px 0 11px; }
+button.act:disabled { color: var(--face-sh); text-shadow: 1px 1px 0 var(--face-hi); }
+button.act.primary { font-weight: 700; }
+
+input, textarea, select {
+  border: 0;
+  padding: 3px 4px;
+  background: #fff;
+  box-shadow: var(--sunken);
+  font: inherit;
+}
+textarea { resize: vertical; font-family: var(--mono); }
+
+fieldset {
+  margin: 0;
+  border: 0;
+  box-shadow: inset 0 1px 0 var(--face-sh), inset 0 -1px 0 var(--face-hi);
+  padding: 10px;
+}
+
+/* ---------- screens ---------- */
+.screen { flex: 1; min-height: 0; overflow: auto; }
+
+#login { display: flex; align-items: center; justify-content: center; }
+#login .box { width: 340px; }
+#login h1 { font-size: 14px; margin: 0 0 4px; }
+#login .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+#login input { flex: 1; }
+
+/* ---------- layout ---------- */
+#workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr) 320px; }
+#workspace[hidden] { display: none; }
+
+.rail, .dock { display: flex; flex-direction: column; min-height: 0; background: var(--face); }
+.rail { border-right: 1px solid var(--face-sh); box-shadow: inset -1px 0 0 var(--face-hi); }
+.dock { border-left: 1px solid var(--face-sh); box-shadow: inset 1px 0 0 var(--face-hi); }
+
+.rail .scroll, .dock .scroll { flex: 1; overflow: auto; padding: 4px; }
+
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--face); }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 6px;
+  box-shadow: inset 0 1px 0 var(--face-hi), inset 0 -1px 0 var(--face-sh);
+}
+.bar .grow { flex: 1; }
+
+.label { font-size: 11px; color: #404040; }
+
+/* ---------- host list ---------- */
+.host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 6px;
+  margin: 1px 0;
+  cursor: pointer;
+}
+.host:hover { background: #e6e3de; }
+.host[aria-selected="true"] {
+  background: var(--navy);
+  color: #fff;
+}
+.host .name { font-weight: 700; }
+.host .where { font-size: 11px; color: #404040; }
+.host[aria-selected="true"] .where { color: #c8d8f0; }
+.host .rtt { font-size: 11px; }
+
+/* ---------- viewport ---------- */
+#stage { display: flex; flex-direction: column; min-height: 0; }
+#viewport {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding: 4px;
+  background: var(--face);
+  box-shadow: var(--sunken);
+  overflow: hidden;
+}
+#screen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--teal);
+  box-shadow: inset 1px 1px 0 #000, 0 0 0 1px var(--face-hi);
+}
+
+#overlay {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+  pointer-events: none;
+}
+#overlay .pill {
+  background: var(--face);
+  box-shadow: var(--raised);
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+/* ---------- dock ---------- */
+#clipboard { display: flex; flex-direction: column; gap: 6px; }
+.clip-item {
+  background: #fff;
+  box-shadow: var(--sunken);
+  padding: 5px 6px;
+  margin-bottom: 6px;
+}
+.clip-item .text {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow: auto;
+}
+.clip-item .meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: #404040;
+  margin-top: 4px;
+}
+.clip-item .meta .grow { flex: 1; }
+
+#messages { display: flex; flex-direction: column; gap: 4px; }
+.message {
+  background: #ffffe1;
+  box-shadow: var(--raised);
+  padding: 4px 6px;
+  font-size: 11px;
+}
+.message.error { background: #ffe1e1; }
+.message .code { font-family: var(--mono); color: #800000; }
+
+/* The keyboard sink sits over the canvas: focusable, receiving IME input, and
+   invisible. It must not eat pointer events, which go to the canvas. */
+.keysink {
+  position: absolute;
+  inset: 4px;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* The resolution control belongs to the session bar and must not wrap it. */
+#resolution { height: 22px; font-size: 11px; }
+
+/* File rows in the dock: a name that can be long, a size, and an action. */
+.file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 6px;
+}
+.file-row .name {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-row .where { font-size: 10.5px; color: #404040; }
+.file-row button { height: 20px; padding: 0 7px; font-size: 10.5px; }

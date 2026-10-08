@@ -1147,7 +1147,13 @@ el.keySink.addEventListener('input', (event) => {
 });
 
 el.keySink.addEventListener('blur', () => {
-  if (state.session) el.keySink.focus(); // keyboard capture stays with the remote
+  if (!state.session) return;
+  // Give focus back only when it went somewhere that cannot use it. Refocusing
+  // unconditionally would make every other field on the page unusable: the
+  // clipboard box would send what was typed into it to the remote instead.
+  const next = document.activeElement;
+  if (next && next !== document.body) return;
+  el.keySink.focus();
 });
 
 function browserShortcut(event) {

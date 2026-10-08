@@ -56,6 +56,7 @@ type options struct {
 	tlsKey         string
 	trustProxy     bool
 	debug          bool
+	traceInput     bool
 	demo           bool
 	showVersion    bool
 }
@@ -79,11 +80,22 @@ func run(args []string) error {
 	// password at INFO level during the CredSSP handshake
 	// (protocol/nla/ntlm.go:442), so the default here is WARN and only
 	// -debug may raise it.
-	if opts.debug {
+	switch {
+	case opts.traceInput:
+		// TRACE prints the bytes of every PDU grdp writes, which is the only
+		// way to tell "the remote ignored the input" from "the input was never
+		// sent". It also prints every received frame, so it is meant for a
+		// short session, not for running the gateway.
+		glog.SetLevel(glog.TRACE)
+		logger.Print("WARNING: -trace-input raises grdp's log level to TRACE. " +
+			"This prints the remote account password in plaintext during NLA " +
+			"authentication, and the bytes of every frame. Use it for a short " +
+			"session and then stop the gateway")
+	case opts.debug:
 		glog.SetLevel(glog.INFO)
 		logger.Print("WARNING: -debug raises grdp's log level to INFO, which prints " +
 			"the remote account password in plaintext during NLA authentication")
-	} else {
+	default:
 		glog.SetLevel(glog.WARN)
 	}
 
@@ -283,6 +295,11 @@ func parseFlags(args []string) (options, error) {
 		"serve a synthetic desktop instead of connecting to anything. It draws the "+
 			"input it receives, which is useful for checking the UI and the input "+
 			"mapping. No remote host is contacted")
+	fs.BoolVar(&opts.traceInput, "trace-input", false,
+		"raise grdp's log level to TRACE so the bytes of every input PDU are "+
+			"logged, for finding out whether a click was sent or ignored. Very "+
+			"verbose, and it re-enables the credential logging described "+
+			"in the startup warning")
 	fs.BoolVar(&opts.debug, "debug", false,
 		"raise grdp's log level to INFO. This re-enables the credential logging "+
 			"described in the startup warning")

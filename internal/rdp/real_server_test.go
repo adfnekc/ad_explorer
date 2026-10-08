@@ -246,37 +246,40 @@ loop:
 		}()
 
 		before := snapshot(t, s)
-		// The Start button, because opening the Start menu is the largest and
-		// least ambiguous change a single click can make. A right click on the
-		// wallpaper was tried first and changed nothing, which may mean the input
-		// never arrived or may mean a synthetic right click there is simply
-		// ignored; this one cannot be ambiguous. Escape closes it again.
-		clickAt := [2]int{20, 690}
-		s.MouseMove(clickAt[0], clickAt[1])
-		time.Sleep(150 * time.Millisecond)
-		s.MouseButton(0, true, clickAt[0], clickAt[1])
-		time.Sleep(60 * time.Millisecond)
-		s.MouseButton(0, false, clickAt[0], clickAt[1])
-		time.Sleep(2 * time.Second)
-		after := snapshot(t, s)
+		// Hold the left button down and drag across the desktop. A drag draws a
+		// selection rectangle, which is large and unmistakable, and it needs the
+		// button to be down while the pointer moves. A press that leaves no
+		// rectangle means the press never arrived; a rectangle means the press
+		// arrived and the release is what does not.
+		s.MouseMove(400, 300)
+		time.Sleep(200 * time.Millisecond)
+		s.MouseButton(0, true, 400, 300)
+		time.Sleep(200 * time.Millisecond)
+		held := snapshot(t, s)
+		for _, step := range [][2]int{{550, 380}, {700, 460}, {850, 540}, {950, 620}} {
+			s.MouseButton(0, true, step[0], step[1])
+			time.Sleep(120 * time.Millisecond)
+		}
+		time.Sleep(1200 * time.Millisecond)
+		dragging := snapshot(t, s)
+		s.MouseButton(0, false, 950, 620)
+		time.Sleep(1500 * time.Millisecond)
 
-		// Keep both, because a pixel count says nothing about what was on
-		// screen: a context menu that never appeared and a desktop that was
-		// never there look identical to a comparison.
-		writePNG(t, before, "adx-input-before.png")
-		writePNG(t, after, "adx-input-after.png")
+		writePNG(t, before, "adx-drag-before.png")
+		writePNG(t, held, "adx-drag-held.png")
+		writePNG(t, dragging, "adx-drag-dragging.png")
 
-		changed := differingPixels(before, after)
+		changed := differingPixels(held, dragging)
 		total := before.Bounds().Dx() * before.Bounds().Dy()
-		t.Logf("right click at %v changed %d of %d pixels (%.1f%%)",
-			clickAt, changed, total, float64(changed)/float64(total)*100)
+		t.Logf("dragging with the button held changed %d of %d pixels (%.1f%%)",
+			changed, total, float64(changed)/float64(total)*100)
 
-		// Close the context menu so the session is left as it was found.
+		// Close the selection rectangle so the session is left as it was found.
 		s.KeyScancode(ScEscape, true)
 		s.KeyScancode(ScEscape, false)
 
 		if changed*100/total < 1 {
-			msg := fmt.Sprintf("a right click on the desktop changed nothing (%d of %d pixels). "+
+			msg := fmt.Sprintf("holding the button and dragging changed nothing (%d of %d pixels). "+
 				"On a session that is not signed in, or whose shell has not taken keyboard "+
 				"focus, this proves nothing; see grdp's docs/windows-verification.md", changed, total)
 			if os.Getenv("ADX_TEST_REQUIRE_INPUT") != "" {

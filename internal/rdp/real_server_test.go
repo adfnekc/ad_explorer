@@ -246,11 +246,25 @@ loop:
 		}()
 
 		before := snapshot(t, s)
-		clickAt := [2]int{700, 400}
-		s.MouseButton(2, true, clickAt[0], clickAt[1])
-		s.MouseButton(2, false, clickAt[0], clickAt[1])
+		// The Start button, because opening the Start menu is the largest and
+		// least ambiguous change a single click can make. A right click on the
+		// wallpaper was tried first and changed nothing, which may mean the input
+		// never arrived or may mean a synthetic right click there is simply
+		// ignored; this one cannot be ambiguous. Escape closes it again.
+		clickAt := [2]int{20, 690}
+		s.MouseMove(clickAt[0], clickAt[1])
+		time.Sleep(150 * time.Millisecond)
+		s.MouseButton(0, true, clickAt[0], clickAt[1])
+		time.Sleep(60 * time.Millisecond)
+		s.MouseButton(0, false, clickAt[0], clickAt[1])
 		time.Sleep(2 * time.Second)
 		after := snapshot(t, s)
+
+		// Keep both, because a pixel count says nothing about what was on
+		// screen: a context menu that never appeared and a desktop that was
+		// never there look identical to a comparison.
+		writePNG(t, before, "adx-input-before.png")
+		writePNG(t, after, "adx-input-after.png")
 
 		changed := differingPixels(before, after)
 		total := before.Bounds().Dx() * before.Bounds().Dy()
@@ -393,6 +407,23 @@ func framebufferBounds(t *testing.T, s *Session) image.Rectangle {
 // Protocol is the security path, named here only so the table above reads
 // clearly.
 type Protocol string
+
+// writePNG saves an image where a person can look at it.
+func writePNG(t *testing.T, img *image.RGBA, name string) {
+	t.Helper()
+	path := filepath.Join(os.TempDir(), name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Logf("could not open %s: %v", path, err)
+		return
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		t.Logf("could not encode %s: %v", path, err)
+		return
+	}
+	t.Logf("wrote %s", path)
+}
 
 // snapshot reads the current framebuffer into an image the test owns.
 func snapshot(t *testing.T, s *Session) *image.RGBA {

@@ -992,14 +992,18 @@ function drawnRect() {
   };
 }
 
+// lastPointer is where the pointer was last seen, so a button released by
+// something other than a pointer event — a window losing focus — is released at
+// the position the remote last knew about rather than at the origin.
+const lastPointer = { x: 0, y: 0 };
+
 function remotePoint(event) {
   const drawn = drawnRect();
   const x = Math.round((event.clientX - drawn.left) / drawn.scale);
   const y = Math.round((event.clientY - drawn.top) / drawn.scale);
-  return {
-    x: Math.max(0, Math.min(el.screen.width - 1, x)),
-    y: Math.max(0, Math.min(el.screen.height - 1, y)),
-  };
+  lastPointer.x = Math.max(0, Math.min(el.screen.width - 1, x));
+  lastPointer.y = Math.max(0, Math.min(el.screen.height - 1, y));
+  return { x: lastPointer.x, y: lastPointer.y };
 }
 
 el.screen.addEventListener('mousemove', (event) => {
@@ -1007,13 +1011,57 @@ el.screen.addEventListener('mousemove', (event) => {
   send({ type: 'input.mouse', x, y, action: 'move' });
 });
 
-for (const [name, button] of [['mousedown', 'down'], ['mouseup', 'up']]) {
-  el.screen.addEventListener(name, (event) => {
-    event.preventDefault();
-    el.keySink.focus();
-    const { x, y } = remotePoint(event);
-    send({ type: 'input.mouse', x, y, action: button, button: event.button });
-  });
+// A button that goes down on the canvas and comes up outside it must still be
+// released on the remote. Without that the server believes the button is held,
+// Windows enters a drag, and every later click does something other than what
+// was aimed at — which reads as the mouse not working. The release is therefore
+// watched on the window, and a window that loses focus releases everything,
+// because whatever happened to the mouse after that cannot be observed.
+const heldButtons = new Set();
+
+el.screen.addEventListener('mousedown', (event) => {
+  event.preventDefault();
+  el.keySink.focus();
+  const { x, y } = remotePoint(event);
+  heldButtons.add(event.button);
+  send({ type: 'input.mouse', x, y, action: 'down', button: event.button });
+});
+
+window.addEventListener('mouseup', (event) => {
+  if (!state.session) return;
+  const { x, y } = remotePoint(event);
+  const wasHeld = heldButtons.delete(event.button);
+  if (!wasHeld && !event.buttons) {
+    // A release for something this page never pressed, and nothing else is down
+    // either: sending it anyway would be harmless but pointless.
+    return;
+  }
+  send({ type: 'input.mouse', x, y, action: 'up', button: event.button });
+});
+
+// Dragging continues outside the canvas, which is what a selection or a window
+// move needs.
+window.addEventListener('mousemove', (event) => {
+  if (heldButtons.size === 0) return;
+  const { x, y } = remotePoint(event);
+  send({ type: 'input.mouse', x, y, action: 'move' });
+});
+
+window.addEventListener('blur', () => {
+  releaseHeldButtons();
+});
+
+// The page going away is the other way a held button is never released.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseHeldButtons();
+});
+
+function releaseHeldButtons() {
+  if (heldButtons.size === 0) return;
+  for (const button of heldButtons) {
+    send({ type: 'input.mouse', x: lastPointer.x, y: lastPointer.y, action: 'up', button });
+  }
+  heldButtons.clear();
 }
 
 el.screen.addEventListener('contextmenu', (event) => event.preventDefault());

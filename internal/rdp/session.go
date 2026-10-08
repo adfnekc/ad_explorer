@@ -106,6 +106,10 @@ type Config struct {
 	Name string
 	// Timeout bounds the whole handshake. Zero means 30s.
 	Timeout time.Duration
+	// NoFastPathInput sends keyboard and mouse over the slow path instead of
+	// the fast-path input PDU. It exists for diagnosing a server that ignores
+	// one of the two; the fast path is the normal one.
+	NoFastPathInput bool
 	// Debug raises grdp's log level to INFO. It exists for diagnosing a
 	// handshake, and it re-enables the credential logging described in the
 	// package comment, so it is off by default and warns when used.
@@ -297,6 +301,7 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 	// server has no way to be asked, and the call fails rather than silently
 	// doing nothing.
 	setting.EnableDisplayControl = true
+	setting.NoFastPathInput = cfg.NoFastPathInput
 	// EnableOrders and EnableEGFX stay off: both change how the server draws,
 	// and with the frame path not wired up yet there is nothing to benefit.
 	setting.LogLevel = level

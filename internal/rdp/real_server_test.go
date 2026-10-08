@@ -2,6 +2,7 @@ package rdp
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -74,6 +75,9 @@ func TestAgainstARealServer(t *testing.T) {
 		Host: host, User: user, Password: password,
 		Protocol: string(working), Width: 1280, Height: 720,
 		Timeout: 20 * time.Second, Name: "integration",
+		// ADX_TEST_SLOW_INPUT=1 sends input over the slow path, which is how
+		// the two encodings are told apart when a server ignores one of them.
+		NoFastPathInput: os.Getenv("ADX_TEST_SLOW_INPUT") != "",
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -207,6 +211,86 @@ loop:
 		}
 	}
 
+	// ---- does input actually reach the server? ----
+	//
+	// This probe compares the screen before and after a right click on the empty
+	// desktop: a context menu changes a large part of it, changes no state, and
+	// Escape closes it again.
+	//
+	// It reports rather than fails by default, because this host cannot always
+	// answer the question, and grdp's own Windows notes say so: a connection that
+	// meets the shell's "Another user is signed in. Do you want to sign in
+	// anyway?" prompt gets no input at all until Yes is clicked, and that target
+	// is also documented as one where the shell does not take keyboard focus, so
+	// typing reaches nothing while the mouse works. A silent screen therefore
+	// means "not demonstrable here" far more often than it means "the input path
+	// is broken", and a test that cried wolf would stop being read.
+	//
+	// Set ADX_TEST_REQUIRE_INPUT=1 on a host whose session is already signed in
+	// to make it a failure instead.
+	t.Run("input reaches the server", func(t *testing.T) {
+		// Let the session settle. A takeover signs the previous session out and
+		// signs this one in, which takes seconds.
+		time.Sleep(6 * time.Second)
+
+		positions := make(chan [2]int, 64)
+		go func() {
+			for ev := range s.Events() {
+				if pos, ok := ev.(CursorPos); ok {
+					select {
+					case positions <- [2]int{pos.X, pos.Y}:
+					default:
+					}
+				}
+			}
+		}()
+
+		before := snapshot(t, s)
+		clickAt := [2]int{700, 400}
+		s.MouseButton(2, true, clickAt[0], clickAt[1])
+		s.MouseButton(2, false, clickAt[0], clickAt[1])
+		time.Sleep(2 * time.Second)
+		after := snapshot(t, s)
+
+		changed := differingPixels(before, after)
+		total := before.Bounds().Dx() * before.Bounds().Dy()
+		t.Logf("right click at %v changed %d of %d pixels (%.1f%%)",
+			clickAt, changed, total, float64(changed)/float64(total)*100)
+
+		// Close the context menu so the session is left as it was found.
+		s.KeyScancode(ScEscape, true)
+		s.KeyScancode(ScEscape, false)
+
+		if changed*100/total < 1 {
+			msg := fmt.Sprintf("a right click on the desktop changed nothing (%d of %d pixels). "+
+				"On a session that is not signed in, or whose shell has not taken keyboard "+
+				"focus, this proves nothing; see grdp's docs/windows-verification.md", changed, total)
+			if os.Getenv("ADX_TEST_REQUIRE_INPUT") != "" {
+				t.Error(msg)
+			} else {
+				t.Log("NOTE: " + msg)
+			}
+		}
+
+		// The pointer echo is a second opinion, and a weaker one: not every
+		// server sends it, and a move that lands while the session is still
+		// signing in is ignored.
+		s.MouseMove(320, 240)
+		s.MouseMove(640, 360)
+		seen := 0
+		deadline := time.After(2 * time.Second)
+	collect:
+		for {
+			select {
+			case <-positions:
+				seen++
+			case <-deadline:
+				break collect
+			}
+		}
+		t.Logf("the server reported %d pointer positions after two moves", seen)
+	})
+
 	// ---- resize ----
 
 	// grdp learns a new desktop size from the server's drawing rather than from
@@ -309,6 +393,70 @@ func framebufferBounds(t *testing.T, s *Session) image.Rectangle {
 // Protocol is the security path, named here only so the table above reads
 // clearly.
 type Protocol string
+
+// snapshot reads the current framebuffer into an image the test owns.
+func snapshot(t *testing.T, s *Session) *image.RGBA {
+	t.Helper()
+	fb, err := s.Framebuffer()
+	if err != nil {
+		t.Fatalf("Framebuffer: %v", err)
+	}
+	bounds := fb.Bounds()
+	out := image.NewRGBA(bounds)
+	pix, stride := fb.Pix(), fb.Stride()
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			o := y*stride + x*4
+			if o+3 >= len(pix) {
+				continue
+			}
+			out.SetRGBA(x, y, color.RGBA{R: pix[o+2], G: pix[o+1], B: pix[o], A: 255})
+		}
+	}
+	return out
+}
+
+// differingPixels counts pixels that differ by more than a compression artefact.
+// The frames come from a lossy codec, so an exact comparison would report noise
+// as change.
+func differingPixels(a, b *image.RGBA) int {
+	if a.Bounds() != b.Bounds() {
+		return a.Bounds().Dx() * a.Bounds().Dy()
+	}
+	n := 0
+	bounds := a.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			ca, cb := a.RGBAAt(x, y), b.RGBAAt(x, y)
+			if diff(ca.R, cb.R) > 24 || diff(ca.G, cb.G) > 24 || diff(ca.B, cb.B) > 24 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func diff(a, b uint8) int {
+	if a > b {
+		return int(a) - int(b)
+	}
+	return int(b) - int(a)
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func keysOf(m map[[2]int]bool) [][2]int {
+	out := make([][2]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
 
 func distinctBytes(b []byte) int {
 	seen := [256]bool{}

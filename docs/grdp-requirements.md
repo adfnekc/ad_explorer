@@ -517,7 +517,20 @@ README 的验收写的是「resizes the framebuffer to 1280x768」，那是一�
 
 ---
 
-## K（P0）`recvDemandActivePDU` 的并发 map 写：进程级崩溃
+## K（P0）`recvDemandActivePDU` 的并发 map 写：进程级崩溃 —— ✅ v0.8.4 已修复
+
+**v0.8.4 的结果**：`serverCapabilities` 加了 `capsMu`，写入（`pdu.go:249-252`）已在锁内，
+并且新增了 `Client.ServerCapabilities()`——**返回副本**，这样调用方也不会拿到一张会被并发改的 map。
+这是正确的修法，而且比我建议的只加锁更进一步。
+
+**残留（P2，不阻塞）**：`Emitter.Once` 仍然是**追加**（`emitter.go` 的 `append(emitter.onces[event], fn)`），
+三个注册点也仍在（`pdu.go:213 / 243 / 457`）。所以 `recvDemandActivePDU` **仍可能并发跑两遍**，
+两遍都会调 `sendConfirmActivePDU()`，向服务器发两次确认 PDUs。
+加锁之后不会再崩，但重复发送仍可能让服务器困惑。建议把 `Once` 改成替换同名监听。
+
+下面是原始报告，留作记录。
+
+### 原始报告
 
 ### 现状
 

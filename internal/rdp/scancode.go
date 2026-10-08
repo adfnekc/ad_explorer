@@ -118,6 +118,7 @@ func IsExtended(sc uint16) bool { return sc&0xFF00 == extension }
 // cannot send them: Ctrl+Alt+Del is claimed by the operating system and never
 // reaches the page.
 const (
+	ScEscape      = scEscape
 	ScControlLeft = scControlLeft
 	ScAltLeft     = scAltLeft
 	ScDelete      = extension | 0x53

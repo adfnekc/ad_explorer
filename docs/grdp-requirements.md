@@ -600,3 +600,88 @@ Deactivate All 是**会话被另一个连接接管**时服务器发的——连�
 
 无法在网关侧绕过：这是进程级致命错误，不是可以 `recover` 的 panic。
 目前只能减少触发面（更少的并发会话、更短的宽限期），但**根因在 grdp**。
+
+---
+
+## L. 初始同步事件缺失，且无法在一个 PDU 里混发不同类型的事件
+
+### 现象
+
+对某台 Windows 10 LTSC（Build 19041）目标机，grdp 的鼠标**移动**能到达
+（远端指针跟着动、悬停会出 tooltip），**键盘**能到达，但鼠标**按键**
+（按下与抬起，左右键都是）**完全不到达**：单击不选中图标、双击不开窗口、
+点开始按钮不弹菜单。同一台机器上 mstsc 正常。
+
+### 已排除
+
+- **不是指针标志位**。`internal/rdp` 已逐层核对：浏览器 → `wsframe` →
+  `session.handleControl` → `rdp.Session.MouseButton` → grdp `MouseDown/Up`。
+  grdp 写出的字节为 `04 80 0a | 20 | 0098 | xxxx | yyyy`（按下）和
+  `...| 0018 | ...`（抬起）。
+- **不是编码**。逐行比对 FreeRDP 的编码器（`libfreerdp/core/input.c`、
+  `fastpath.c`），grdp 的 PDU 与 FreeRDP **逐字节相同**：
+  头字节 `FASTPATH_ACTION_FASTPATH | (numEvents << 2)` → `0x04`；
+  长度 `Stream_Write_UINT16_BE(s, 0x8000 | length)`；事件头
+  `eventFlags | (eventCode << 5)` → MOUSE = `0x20`；
+  载荷 `flags(2) x(2) y(2)` 小端；`PTRFLAGS_BUTTON1=0x1000`、`DOWN=0x8000`。
+- **不是 `PTRFLAGS_MOVE`**。把按下/抬起上的 `MOVE` 位去掉、或只留一个，
+  五种组合在该机上均无任何效果。
+- **不是 `MOUSEX`**。把事件类型换成 `FASTPATH_INPUT_EVENT_MOUSEX`（头字节 `0x40`）
+  会被服务器回 `sec ERROR_ALERT ErrorCode: 7` 并断开。
+- **不是慢路径**。`Setting.NoFastPathInput` 强制走 T.128 输入 PDU，同样无效果；
+  其 `eventTime`、`messageType` 布局与 FreeRDP 一致。
+- **不是抓包能查的**。该服务器强制 NLA，NLA 之后整条连接是 TLS 加密的，
+  pcap 里只有密文。要比对只能读参考客户端的编码器源码。
+
+### 真正的差异：mstsc 与 FreeRDP 都会在会话建立后先发一个同步事件
+
+FreeRDP 的 `input_send_synchronize_event`（`input.c`）注释写着
+*"send a tab up like mstsc.exe"*，它把**三个事件放进同一个快路径 PDU**：
+
+```c
+eventFlags = FASTPATH_INPUT_KBDFLAGS_RELEASE | FASTPATH_INPUT_EVENT_SCANCODE << 5;
+Stream_Write_UINT8(s, eventFlags);  /* Tab 抬起 */
+Stream_Write_UINT8(s, 0x0f);
+eventFlags = (toggleStates & 0x1F) | FASTPATH_INPUT_EVENT_SYNC << 5;
+Stream_Write_UINT8(s, eventFlags);  /* 同步状态 */
+eventFlags = FASTPATH_INPUT_KBDFLAGS_RELEASE | FASTPATH_INPUT_EVENT_SCANCODE << 5;
+Stream_Write_UINT8(s, eventFlags);  /* 又一个 Tab 抬起 */
+Stream_Write_UINT8(s, 0x0f);
+return fastpath_send_multiple_input_pdu(rdp->fastpath, s, 3, sec_flags);
+```
+
+grdp **从不发送**同步事件：`INPUT_EVENT_SYNC` 与 `SynchronizeEvent` 在源码里
+只有定义，没有任何调用点。
+
+grdp 也**表达不出**上面那个 PDU：
+
+```go
+func (c *Client) SendInputEvents(msgType uint16, events []InputEventsInterface)
+```
+
+所有事件共用同一个 `msgType`，而那个 PDU 里键盘事件（`SCANCODE`）和同步事件
+（`SYNC`）是混在一起的。`sendFastPathInput` 对每个事件写
+`eventCode << 5`，用的是同一个 `eventCode`，所以混合类型无法表达。
+
+### 建议
+
+1. 增加一个公开方法发送同步事件，例如
+   `func (c *RdpClient) SendSynchronize(toggleFlags uint32) error`。
+2. 让 `sendFastPathInput` 允许每个事件带自己的 eventCode，
+   或者提供一个接受 `[]InputEventsInterface` 且能推导各自 eventCode 的入口。
+   否则客户端无法复现 mstsc 那个三事件 PDU。
+3. `SetFastPathSender` 的接线处应当在会话就绪后自动发一次这个前置事件，
+   而不是留给调用方记得去发。
+
+### 验收
+
+- 对一台 Windows 目标机，会话就绪后发一次 Tab 抬起 + 同步 + Tab 抬起，
+  然后双击桌面上的回收站图标：应当弹出资源管理器窗口。
+- 对同一个目标，`MouseDown` 后单个图标应当进入**选中**状态
+  （比悬停高亮更强的边框），而不只是悬停高亮。
+
+### ad_explorer 侧的现状
+
+**未修复，这是目前唯一未闭合的问题。** 已验证 grdp 发出的字节与 FreeRDP 相同，
+所以网关侧没有可改的地方。已试过单独发同步事件（独立 PDU，非混合）并双击
+回收站：未打开窗口。

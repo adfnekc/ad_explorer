@@ -114,6 +114,11 @@ type Config struct {
 	// handshake, and it re-enables the credential logging described in the
 	// package comment, so it is off by default and warns when used.
 	Debug bool
+	// TraceInput raises grdp's log level to TRACE, which prints the bytes of
+	// every PDU it writes. That is the only way to tell an input the remote
+	// ignored from an input that was never sent, so it exists for chasing
+	// exactly that, and like Debug it re-enables the credential logging.
+	TraceInput bool
 }
 
 func (c Config) validate() error {
@@ -206,6 +211,15 @@ type textSink interface {
 	TypeText(s string, hold time.Duration) error
 }
 
+// preambleSink sends the input sequence mstsc sends once the session is ready.
+//
+// It is separate from inputSink because it is a thing to do at the right moment
+// rather than a way to drive a session, and because a protocol without such a
+// sequence should not have to pretend it has one.
+type preambleSink interface {
+	SendInputPreamble(toggleFlags uint32) error
+}
+
 // inputSink is the part of grdp's client this package drives.
 //
 // It exists so the input path can be tested without a server: the real
@@ -287,7 +301,7 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 	}
 
 	level := effectiveLogLevel(cfg)
-	if level == glog.INFO || level == glog.DEBUG {
+	if level <= glog.INFO {
 		glog.Warn("rdp: debug logging enabled; grdp logs the account password in plaintext at this level")
 	}
 
@@ -317,6 +331,7 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 
 	// Handlers are registered before Login so no event can be missed.
 	c.OnReady(func() {
+		s.sendPreamble()
 		s.emit(Ready{Width: cfg.Width, Height: cfg.Height, Name: cfg.Name, Protocol: cfg.Protocol})
 	})
 	c.OnClipboardText(func(text string) {
@@ -538,6 +553,31 @@ func (s *Session) MouseWheel(delta, x, y int) {
 	s.sink.MouseWheel(delta, x, y)
 }
 
+// sendPreamble sends the input sequence mstsc sends once the session is ready: a
+// Tab release, the toggle key state, then another Tab release. Both mstsc and
+// FreeRDP send it, and a server that never sees it does not take pointer button
+// input at all, which looks exactly like the mouse being broken.
+//
+// The toggle state is sent as all-off. Reading the remote's Caps Lock and Num
+// Lock state would mean parsing it back out of the keyboard state the server
+// reports, and getting it wrong is worse than starting from a known state: the
+// user can press the key once to correct it.
+func (s *Session) sendPreamble() {
+	p, ok := s.sink.(preambleSink)
+	if !ok {
+		return
+	}
+	if err := p.SendInputPreamble(0); err != nil {
+		// Worth saying, because a server that never gets this sequence does not
+		// take pointer buttons at all, and that looks like a broken mouse rather
+		// than a missing handshake. It does not end the session: typing and
+		// pointer movement still work.
+		s.emit(ErrorEvent{Code: CodeUnsupported, Err: fmt.Errorf(
+			"the remote did not get the input sequence other clients start with, "+
+				"so pointer buttons may do nothing: %w", err)})
+	}
+}
+
 // SendCtrlAltEnd sends Ctrl+Alt+End, which is the secure attention sequence a
 // remote session answers to. A browser cannot send Ctrl+Alt+Del — the operating
 // system claims it before the page sees it — so the UI offers this instead.
@@ -704,7 +744,10 @@ func (s *Session) live() bool {
 // effectiveLogLevel pins grdp's logger at WARN unless the operator explicitly
 // asked for debug output, because grdp logs the account password at INFO.
 func effectiveLogLevel(cfg Config) glog.LEVEL {
-	if cfg.Debug {
+	switch {
+	case cfg.TraceInput:
+		return glog.TRACE
+	case cfg.Debug:
 		return glog.INFO
 	}
 	return glog.WARN

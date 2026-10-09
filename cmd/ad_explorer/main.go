@@ -156,6 +156,7 @@ func run(args []string) error {
 		Secure:      opts.secureCookie,
 		TrustProxy:  opts.trustProxy,
 		DialTimeout: opts.dialTimeout,
+		TraceInput:  opts.traceInput,
 		Logf:        logger.Printf,
 	})
 	if err != nil {

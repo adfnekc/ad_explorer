@@ -66,6 +66,12 @@ type Config struct {
 	TrustProxy bool
 	// DialTimeout bounds the connect step of a new session.
 	DialTimeout time.Duration
+	// TraceInput raises the RDP client library's log level. It is needed
+	// because the library's level is set when a session is built, so a level
+	// set once at startup is overwritten by the first session and the tracing
+	// silently stops. Like the library's own debug level it prints the remote
+	// account password, so it is off unless an operator asked for it.
+	TraceInput bool
 	// Logf receives one line per request. It is never given a request body, so
 	// a password cannot reach it through here.
 	Logf func(format string, args ...any)
@@ -364,6 +370,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Width:    req.Width,
 		Height:   req.Height,
 		Name:     req.Name,
+
+		TraceInput: s.cfg.TraceInput,
 	}
 
 	sess, err := s.cfg.Sessions.Create(ctx, cfg)

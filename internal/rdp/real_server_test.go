@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
 	"time"
 )
 
@@ -26,6 +27,10 @@ import (
 // asks for a resize. It deliberately does not type anything, because a stray
 // keystroke lands in whatever window the session happens to have focused.
 func TestAgainstARealServer(t *testing.T) {
+	// ADX_TEST_TRACE sets Config.TraceInput, which is what actually raises the
+	// library's log level. Setting glog directly here would not work: the level
+	// is re-asserted when a session is built, so it would be overwritten.
+	trace := os.Getenv("ADX_TEST_TRACE") != ""
 	host := os.Getenv("ADX_TEST_RDP_HOST")
 	if host == "" {
 		t.Skip("set ADX_TEST_RDP_HOST, ADX_TEST_RDP_USER and ADX_TEST_RDP_PASS to run this")
@@ -73,11 +78,13 @@ func TestAgainstARealServer(t *testing.T) {
 
 	s, err := Dial(ctx, Config{
 		Host: host, User: user, Password: password,
-		Protocol: string(working), Width: 1280, Height: 720,
+		Protocol: string(working),
+		Width:    1024, Height: 768,
 		Timeout: 20 * time.Second, Name: "integration",
 		// ADX_TEST_SLOW_INPUT=1 sends input over the slow path, which is how
 		// the two encodings are told apart when a server ignores one of them.
 		NoFastPathInput: os.Getenv("ADX_TEST_SLOW_INPUT") != "",
+		TraceInput:      trace,
 	})
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
@@ -244,6 +251,17 @@ loop:
 				}
 			}
 		}()
+
+		// Clear whatever was selected before, because Windows selects a desktop
+		// icon on button down and the selection outlives the session that made
+		// it: without this the icon is already selected in both frames and a
+		// click that worked looks exactly like a click that did nothing.
+		s.MouseMove(700, 300)
+		time.Sleep(200 * time.Millisecond)
+		s.MouseButton(0, true, 700, 300)
+		time.Sleep(60 * time.Millisecond)
+		s.MouseButton(0, false, 700, 300)
+		time.Sleep(600 * time.Millisecond)
 
 		// Snapshot with the pointer already resting on the icon, so the hover
 		// highlight is in both frames and only the click can differ. Taking the

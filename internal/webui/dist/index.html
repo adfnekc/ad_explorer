@@ -93,6 +93,12 @@
         <button class="act" type="button" id="disconnect" disabled>断开</button>
       </div>
 
+      <!-- Immersive mode hides the bars, including the button that got you
+           there, so the way out has to be visible from inside it. -->
+      <button class="act immersive-exit" type="button" id="immersiveExit" hidden>
+        退出全屏
+      </button>
+
       <div id="stage">
         <div id="viewport">
           <canvas id="screen" width="1280" height="720"></canvas>

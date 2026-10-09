@@ -284,6 +284,14 @@ loop:
 		writePNG(t, before, "adx-click-before.png")
 		writePNG(t, after, "adx-click-after.png")
 
+		// One notch each way, to see what the wheel encoding is in each
+		// direction. A server that scrolls one direction further than the
+		// other is a sign that the two are not encoded symmetrically.
+		s.MouseWheel(3, 512, 360)
+		time.Sleep(300 * time.Millisecond)
+		s.MouseWheel(-3, 512, 360)
+		time.Sleep(300 * time.Millisecond)
+
 		changed := differingPixels(before, after)
 		total := before.Bounds().Dx() * before.Bounds().Dy()
 		t.Logf("double clicking the Recycle Bin changed %d of %d pixels (%.1f%%)",

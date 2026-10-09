@@ -268,3 +268,32 @@ fieldset {
 }
 .file-row .where { font-size: 10.5px; color: #404040; }
 .file-row button { height: 20px; padding: 0 7px; font-size: 10.5px; }
+
+/* ---------- immersive mode ---------- */
+/* Esc belongs to the remote, so this cannot be the Fullscreen API: the browser
+   keeps that key for itself and a page cannot intercept it, which made Esc exit
+   the desktop instead of reaching it. Filling the window from CSS leaves Esc
+   alone. The browser's own chrome stays, which is the price. */
+body.immersive {
+  overflow: hidden;
+}
+body.immersive .stage {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+/* The bars carry the button that entered this, so they go. The way out is the
+   button below, which is only visible here. */
+body.immersive .stage > .bar {
+  display: none;
+}
+.immersive-exit {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 21;
+  opacity: 0.55;
+}
+.immersive-exit:hover {
+  opacity: 1;
+}

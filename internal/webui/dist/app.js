@@ -1082,11 +1082,15 @@ window.addEventListener('mousemove', (event) => {
 
 window.addEventListener('blur', () => {
   releaseHeldButtons();
+  releaseHeldKeys();
 });
 
 // The page going away is the other way a held button is never released.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) releaseHeldButtons();
+  if (document.hidden) {
+    releaseHeldButtons();
+    releaseHeldKeys();
+  }
 });
 
 function releaseHeldButtons() {
@@ -1114,11 +1118,21 @@ el.screen.addEventListener('wheel', (event) => {
 
 // Keys go through the invisible input, so both plain keys and input method
 // compositions land in one place.
+//
+// The codes that are currently down are remembered so they can be released. A
+// key held while the page loses focus never gets a keyup — pressing the Windows
+// key opens the local Start menu and the page is gone before the release — and
+// a remote that is never told lets go believes the key is still held. The
+// remote then stays wedged with that key down, which is how Win+R ends up
+// opening Run on the remote from a key the user let go of.
+const heldKeys = new Set();
+
 el.keySink.addEventListener('keydown', (event) => {
   if (event.isComposing || event.keyCode === 229) return; // mid-composition
   if (!event.code || event.code === 'Unidentified') return;
   if (browserShortcut(event)) return;
   event.preventDefault();
+  heldKeys.add(event.code);
   send({ type: 'input.key', code: event.code, down: true });
 });
 
@@ -1127,8 +1141,19 @@ el.keySink.addEventListener('keyup', (event) => {
   if (!event.code || event.code === 'Unidentified') return;
   if (browserShortcut(event)) return;
   event.preventDefault();
+  heldKeys.delete(event.code);
   send({ type: 'input.key', code: event.code, down: false });
 });
+
+// releaseHeldKeys lets go of everything on the remote that this page believes is
+// still down. Sending the release twice is harmless; leaving it unsent is not.
+function releaseHeldKeys() {
+  if (heldKeys.size === 0) return;
+  for (const code of heldKeys) {
+    send({ type: 'input.key', code, down: false });
+  }
+  heldKeys.clear();
+}
 
 // Intermediate composition state is local UI and is deliberately not sent; a
 // scancode cannot carry it and the remote would receive the pinyin.
@@ -1168,10 +1193,21 @@ el.disconnect.addEventListener('click', () => disconnect());
 
 el.cad.addEventListener('click', () => send({ type: 'session.cad' }));
 
-el.fullscreen.addEventListener('click', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else $('viewport').requestFullscreen();
-});
+// Immersive, not the Fullscreen API. The browser keeps Esc for leaving real
+// fullscreen and a page cannot take it back, so a remote desktop built on it
+// cannot receive the one key every desktop uses to cancel. Filling the window
+// from CSS costs the browser's chrome and keeps Esc.
+el.fullscreen.addEventListener('click', () => setImmersive(true));
+$('immersiveExit').addEventListener('click', () => setImmersive(false));
+
+function setImmersive(on) {
+  document.body.classList.toggle('immersive', on);
+  $('immersiveExit').hidden = !on;
+  el.fullscreen.textContent = on ? '退出全屏' : '全屏';
+  // The keyboard sink is what receives keys, and hiding the bars does not move
+  // focus, but a click on the exit button will have, so put it back.
+  if (on) el.keySink.focus();
+}
 
 el.resolution.addEventListener('change', () => {
   const [width, height] = el.resolution.value.split('x').map(Number);
@@ -1319,9 +1355,6 @@ function showLogin() {
 // A reload keeps the cookie, so the console opens straight away; asking for the
 // password again when the session is still valid would be noise.
 async function start() {
-  document.addEventListener('fullscreenchange', () => {
-    el.fullscreen.textContent = document.fullscreenElement ? '退出全屏' : '全屏';
-  });
   el.qualityValue.textContent = el.quality.value;
 
   try {

@@ -82,7 +82,7 @@ const state = {
   // reports no pointer position while the counters climb is a remote that is
   // receiving nothing, and counters that do not climb are the browser not
   // sending — two different problems with the same symptom on screen.
-  sent: { move: 0, button: 0, key: 0, text: 0 },
+  sent: { move: 0, button: 0, key: 0, text: 0, wheel: 0 },
   remoteCursor: null,
   // lastCloseCode is why the socket last closed, so the message shown when the
   // budget runs out can say whether another browser is holding the session.
@@ -186,6 +186,9 @@ function send(control) {
     case 'input.mouse': state.sent[control.action === 'move' ? 'move' : 'button']++; break;
     case 'input.key': state.sent.key++; break;
     case 'input.text': state.sent.text++; break;
+    // Counted as notches rather than events, because one flick of a wheel can
+    // arrive as one event carrying several.
+    case 'input.wheel': state.sent.wheel += Math.abs(control.delta); break;
   }
   state.socket.send(JSON.stringify(control));
   return true;
@@ -747,7 +750,7 @@ function renderInputTelemetry() {
   if (!t) return;
   const s = state.sent;
   t.textContent =
-    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key}` +
+    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · 滚轮 ${s.wheel}` +
     (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报');
 }
 
@@ -1103,13 +1106,23 @@ function releaseHeldButtons() {
 
 el.screen.addEventListener('contextmenu', (event) => event.preventDefault());
 
-// Wheel notches accumulate: a trackpad reports many small deltas, and the
+// Wheel notches accumulate, because a trackpad reports many small deltas and the
 // protocol counts whole notches.
+//
+// What one notch measures depends on deltaMode: pixels (a wheel notch is 100, or
+// 120 on some drivers), lines, or pages. Dividing a line-mode delta of 3 by 100
+// leaves a fraction that never reaches a notch, so the wheel does nothing at all;
+// normalising per mode is what keeps all three working.
 let wheelAccumulator = 0;
+const wheelPerNotch = (mode) => {
+  if (mode === 1) return 3; // lines
+  if (mode === 2) return 1; // pages
+  return 100; // pixels
+};
 el.screen.addEventListener('wheel', (event) => {
   event.preventDefault();
   const { x, y } = remotePoint(event);
-  wheelAccumulator += -event.deltaY / 100;
+  wheelAccumulator += -event.deltaY / wheelPerNotch(event.deltaMode);
   const notches = Math.trunc(wheelAccumulator);
   if (notches === 0) return;
   wheelAccumulator -= notches;

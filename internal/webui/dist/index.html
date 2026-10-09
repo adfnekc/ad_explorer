@@ -102,12 +102,6 @@
       <div id="stage">
         <div id="viewport">
           <canvas id="screen" width="1280" height="720"></canvas>
-          <!-- Keyboard and IME input land here. A canvas cannot take focus and
-               cannot host a composition session, so the keys are captured on an
-               invisible input laid over it. -->
-          <input id="keySink" class="keysink" type="text" autocomplete="off"
-                 autocapitalize="off" autocorrect="off" spellcheck="false"
-                 aria-label="远程键盘输入">
           <div id="overlay">
             <span class="pill" id="stats">idle</span>
             <span class="pill" id="capability"></span>
@@ -122,7 +116,7 @@
         <span class="grow"></span>
         <span class="label" id="inputTelemetry">↑ 移动 0 · 点击 0 · 按键 0</span>
         <span class="controls__sep" style="width:1px;height:14px;background:var(--face-sh)"></span>
-        <span class="label" id="hint">点击画面以捕获键盘</span>
+        <span class="label" id="hint">键盘已直通远端</span>
       </div>
     </div>
 

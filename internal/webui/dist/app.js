@@ -125,7 +125,6 @@ const el = {
   disconnect: $('disconnect'),
 
   screen: $('screen'),
-  keySink: $('keySink'),
   stats: $('stats'),
   inputTelemetry: $('inputTelemetry'),
   capability: $('capability'),
@@ -421,7 +420,6 @@ function openSocket(id, reconnecting) {
     el.resolution.disabled = false;
     el.offerFiles.disabled = false;
     el.clearOffer.disabled = false;
-    el.keySink.focus();
     // The HUD's round trip figure is measured, not guessed.
     state.pingTimer = setInterval(() => {
       state.lastPing = performance.now();
@@ -691,7 +689,41 @@ function handleControl(message) {
 
 // ---------------------------------------------------------------- pixels
 
-async function handleFrame(buffer) {
+// Frames are decoded one at a time, in the order they arrived.
+//
+// Decoding is asynchronous and the frames arrive faster than they decode, so
+// without this the draws happen in completion order: a region of an older frame
+// whose decode happened to finish later paints over a newer one, and the desktop
+// shows blocks of itself in the wrong place. Larger desktops have larger frames
+// and more overlap, which is why it shows up there first.
+const drawQueue = [];
+let drawing = false;
+
+function handleFrame(buffer) {
+  // A full frame covers the whole desktop, so anything still waiting is already
+  // represented by it. Dropping the queue at that point is what stops a slow
+  // decoder from replaying history, and the order of what is left is untouched.
+  if (buffer.byteLength >= HEADER_LEN && (new DataView(buffer).getUint16(2, true) & 0x0001)) {
+    drawQueue.length = 0;
+  }
+  drawQueue.push(buffer);
+  if (!drawing) pumpDraw();
+}
+
+async function pumpDraw() {
+  drawing = true;
+  while (drawQueue.length > 0) {
+    const buffer = drawQueue.shift();
+    try {
+      await drawFrame(buffer);
+    } catch (error) {
+      noteError('frame_failed', `画面绘制失败：${error.message}`);
+    }
+  }
+  drawing = false;
+}
+
+async function drawFrame(buffer) {
   if (buffer.byteLength < HEADER_LEN) return;
   const view = new DataView(buffer);
   const type = view.getUint8(0);
@@ -1057,7 +1089,6 @@ const heldButtons = new Set();
 
 el.screen.addEventListener('mousedown', (event) => {
   event.preventDefault();
-  el.keySink.focus();
   const { x, y } = remotePoint(event);
   heldButtons.add(event.button);
   send({ type: 'input.mouse', x, y, action: 'down', button: event.button });
@@ -1129,19 +1160,36 @@ el.screen.addEventListener('wheel', (event) => {
   send({ type: 'input.wheel', x, y, delta: notches });
 }, { passive: false });
 
-// Keys go through the invisible input, so both plain keys and input method
-// compositions land in one place.
+// Keys are taken from the document rather than from a focused text field.
+//
+// A text field is what the local input method attaches to, so having one focused
+// meant the local IME composed the keystrokes before the remote ever saw them: a
+// remote desktop wants the remote's own IME to do that, and the keys to arrive
+// as keys. With nothing editable focused there is no composition session to
+// interfere, and the scancodes go through untouched.
 //
 // The codes that are currently down are remembered so they can be released. A
 // key held while the page loses focus never gets a keyup — pressing the Windows
-// key opens the local Start menu and the page is gone before the release — and
-// a remote that is never told lets go believes the key is still held. The
-// remote then stays wedged with that key down, which is how Win+R ends up
-// opening Run on the remote from a key the user let go of.
+// key opens the local Start menu and the page is gone before the release — and a
+// remote that is never told lets go believes the key is still held. The remote
+// then stays wedged with that key down, which is how Win+R ends up opening Run
+// on the remote from a key the user let go of.
 const heldKeys = new Set();
 
-el.keySink.addEventListener('keydown', (event) => {
-  if (event.isComposing || event.keyCode === 229) return; // mid-composition
+// typingIntoUI reports whether the keystroke belongs to a control on this page
+// rather than to the remote. Without it, typing a host name or a clipboard
+// string would also be sent to the remote.
+function typingIntoUI(event) {
+  const target = event.target;
+  if (!target || !target.tagName) return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
+document.addEventListener('keydown', (event) => {
+  if (!state.session) return;
+  if (typingIntoUI(event)) return;
+  if (event.isComposing || event.keyCode === 229) return;
   if (!event.code || event.code === 'Unidentified') return;
   if (browserShortcut(event)) return;
   event.preventDefault();
@@ -1149,7 +1197,9 @@ el.keySink.addEventListener('keydown', (event) => {
   send({ type: 'input.key', code: event.code, down: true });
 });
 
-el.keySink.addEventListener('keyup', (event) => {
+document.addEventListener('keyup', (event) => {
+  if (!state.session) return;
+  if (typingIntoUI(event)) return;
   if (event.isComposing || event.keyCode === 229) return;
   if (!event.code || event.code === 'Unidentified') return;
   if (browserShortcut(event)) return;
@@ -1167,32 +1217,6 @@ function releaseHeldKeys() {
   }
   heldKeys.clear();
 }
-
-// Intermediate composition state is local UI and is deliberately not sent; a
-// scancode cannot carry it and the remote would receive the pinyin.
-el.keySink.addEventListener('compositionend', (event) => {
-  if (event.data) send({ type: 'input.text', text: event.data });
-  el.keySink.value = '';
-});
-
-el.keySink.addEventListener('input', (event) => {
-  // Characters that arrived without a composition: an emoji picker, or a
-  // layout where a scancode would be wrong.
-  const text = el.keySink.value;
-  if (!text) return;
-  send({ type: 'input.text', text });
-  el.keySink.value = '';
-});
-
-el.keySink.addEventListener('blur', () => {
-  if (!state.session) return;
-  // Give focus back only when it went somewhere that cannot use it. Refocusing
-  // unconditionally would make every other field on the page unusable: the
-  // clipboard box would send what was typed into it to the remote instead.
-  const next = document.activeElement;
-  if (next && next !== document.body) return;
-  el.keySink.focus();
-});
 
 function browserShortcut(event) {
   // Leave the keys the browser needs. Everything else goes to the remote.
@@ -1217,9 +1241,6 @@ function setImmersive(on) {
   document.body.classList.toggle('immersive', on);
   $('immersiveExit').hidden = !on;
   el.fullscreen.textContent = on ? '退出全屏' : '全屏';
-  // The keyboard sink is what receives keys, and hiding the bars does not move
-  // focus, but a click on the exit button will have, so put it back.
-  if (on) el.keySink.focus();
 }
 
 el.resolution.addEventListener('change', () => {

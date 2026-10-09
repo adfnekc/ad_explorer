@@ -685,3 +685,10 @@ func (c *Client) SendInputEvents(msgType uint16, events []InputEventsInterface)
 **未修复，这是目前唯一未闭合的问题。** 已验证 grdp 发出的字节与 FreeRDP 相同，
 所以网关侧没有可改的地方。已试过单独发同步事件（独立 PDU，非混合）并双击
 回收站：未打开窗口。
+
+### 上游 issue
+
+按上面的内容整理成一份可直接提交的上游报告，见
+`docs/upstream/grdp-mouse-buttons.md`。它把事实（可与 FreeRDP 逐字节比对、
+已排除项、TRACE 字节）与推测（同步事件可能相关，但单独发送无效）分开写，
+并给出复现、建议的 API 和验收标准。

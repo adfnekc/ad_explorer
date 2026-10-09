@@ -245,41 +245,38 @@ loop:
 			}
 		}()
 
-		before := snapshot(t, s)
-		// Hold the left button down and drag across the desktop. A drag draws a
-		// selection rectangle, which is large and unmistakable, and it needs the
-		// button to be down while the pointer moves. A press that leaves no
-		// rectangle means the press never arrived; a rectangle means the press
-		// arrived and the release is what does not.
-		s.MouseMove(400, 300)
-		time.Sleep(200 * time.Millisecond)
-		s.MouseButton(0, true, 400, 300)
-		time.Sleep(200 * time.Millisecond)
-		held := snapshot(t, s)
-		for _, step := range [][2]int{{550, 380}, {700, 460}, {850, 540}, {950, 620}} {
-			s.MouseButton(0, true, step[0], step[1])
-			time.Sleep(120 * time.Millisecond)
-		}
-		time.Sleep(1200 * time.Millisecond)
-		dragging := snapshot(t, s)
-		s.MouseButton(0, false, 950, 620)
+		// Snapshot with the pointer already resting on the icon, so the hover
+		// highlight is in both frames and only the click can differ. Taking the
+		// baseline before the move made the highlight look like the click.
+		s.MouseMove(36, 36)
 		time.Sleep(1500 * time.Millisecond)
+		before := snapshot(t, s)
 
-		writePNG(t, before, "adx-drag-before.png")
-		writePNG(t, held, "adx-drag-held.png")
-		writePNG(t, dragging, "adx-drag-dragging.png")
+		// A double click, with the press and release separated the way a
+		// person's click separates them.
+		for i := 0; i < 2; i++ {
+			s.MouseButton(0, true, 36, 36)
+			time.Sleep(70 * time.Millisecond)
+			s.MouseButton(0, false, 36, 36)
+			time.Sleep(70 * time.Millisecond)
+		}
+		time.Sleep(2500 * time.Millisecond)
+		after := snapshot(t, s)
 
-		changed := differingPixels(held, dragging)
+		writePNG(t, before, "adx-click-before.png")
+		writePNG(t, after, "adx-click-after.png")
+
+		changed := differingPixels(before, after)
 		total := before.Bounds().Dx() * before.Bounds().Dy()
-		t.Logf("dragging with the button held changed %d of %d pixels (%.1f%%)",
+		t.Logf("double clicking the Recycle Bin changed %d of %d pixels (%.1f%%)",
 			changed, total, float64(changed)/float64(total)*100)
 
-		// Close the selection rectangle so the session is left as it was found.
+		// Close the window so the session is left as it was found.
 		s.KeyScancode(ScEscape, true)
 		s.KeyScancode(ScEscape, false)
 
 		if changed*100/total < 1 {
-			msg := fmt.Sprintf("holding the button and dragging changed nothing (%d of %d pixels). "+
+			msg := fmt.Sprintf("a double click on the Recycle Bin changed nothing (%d of %d pixels). "+
 				"On a session that is not signed in, or whose shell has not taken keyboard "+
 				"focus, this proves nothing; see grdp's docs/windows-verification.md", changed, total)
 			if os.Getenv("ADX_TEST_REQUIRE_INPUT") != "" {

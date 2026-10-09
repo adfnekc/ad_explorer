@@ -802,6 +802,12 @@ func (s *Session) frameLoop(src FrameSource) {
 // session should stop.
 func (s *Session) render(update Update) bool {
 	img := update.Image
+	if img == nil {
+		// The source has nothing to show yet. Dropping the regions would lose
+		// the update, so they stay accumulated until the next one arrives.
+		return true
+	}
+
 	// A resize replaces the buffer and every coordinate that referred to it, so
 	// the accumulator is rebuilt and the whole of the new desktop is marked
 	// dirty. It is the image being encoded that decides, not the source: a held
@@ -811,19 +817,27 @@ func (s *Session) render(update Update) bool {
 		s.acc.Add(b)
 	}
 
-	if img == nil {
-		// The source has nothing to show yet. Dropping the regions would lose
-		// the update, so they stay accumulated until the next one arrives.
-		return true
-	}
-
 	frames, err := s.builder.Build(img, s.acc, s.quality.Value())
+	// The regions are forgotten here whatever happens next, so every way out of
+	// this function has to leave the accumulator asking for the whole desktop if
+	// the client did not get all of them. Otherwise the pixels those regions
+	// covered are never sent again — the source only reports a region when it
+	// changes — and the client keeps showing whatever happened to be there, which
+	// looks like a block of the old window left behind and only goes away when
+	// the page is reloaded and the first frame is a full one.
 	s.acc.Reset()
 	if err != nil {
+		s.acc.Add(s.acc.Bounds())
 		s.noteDropped()
 		return true
 	}
-	return s.sendFrames(frames) == nil
+	if err := s.sendFrames(frames); err != nil {
+		// Part of the frame may have gone out before the failure, so the client's
+		// copy is half updated rather than untouched.
+		s.acc.Add(s.acc.Bounds())
+		return false
+	}
+	return true
 }
 
 // noteDropped records a frame that never went out.

@@ -23,6 +23,7 @@ func everyClientControl() []Control {
 		SessionResize{Width: 1920, Height: 1080},
 		SessionClose{},
 		SessionCAD{},
+		SessionRepaint{},
 		FilesOffer{Files: []OfferedFile{{Name: "a.iso", Size: 12}}},
 		FilesClear{},
 		FilesGet{Index: 2},

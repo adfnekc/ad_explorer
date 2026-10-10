@@ -806,6 +806,12 @@ async function drawFrame(buffer) {
     bitmap = await createImageBitmap(new Blob([payload], { type: mime }));
   } catch (error) {
     noteError('decode_failed', `画面解码失败：${error.message}`);
+    // A region the server has sent is one it now believes the client holds, and
+    // it will not send it again, so a frame that could not be decoded would
+    // leave that part of the desktop wrong until the page was reloaded. Asking
+    // for the whole desktop is the only way back, and a decode failure is rare
+    // enough that the cost of a full frame does not matter.
+    send({ type: 'session.repaint' });
     return;
   }
 

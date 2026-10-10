@@ -253,6 +253,18 @@ type SessionCAD struct{}
 
 func (SessionCAD) ControlType() string { return "session.cad" }
 
+// SessionRepaint asks for the whole desktop again.
+//
+// The server sends a region when it changes and not before, so a client that
+// fails to draw one has no way to get it back and shows whatever was there until
+// the page is reloaded. Decoding a frame can fail — a large one, on a busy
+// machine — and this is the client saying so rather than leaving the hole.
+type SessionRepaint struct{}
+
+func (SessionRepaint) ControlType() string { return "session.repaint" }
+
+func (SessionRepaint) Validate() error { return nil }
+
 // Ping carries an opaque timestamp the gateway echoes in Pong. The client uses
 // it to measure round trip time for the HUD.
 type Ping struct {
@@ -363,6 +375,7 @@ var controlByType = map[string]func() Control{
 	"session.resize":    func() Control { return &SessionResize{} },
 	"session.close":     func() Control { return &SessionClose{} },
 	"session.cad":       func() Control { return &SessionCAD{} },
+	"session.repaint":   func() Control { return &SessionRepaint{} },
 	"files.offer":       func() Control { return &FilesOffer{} },
 	"files.clear":       func() Control { return &FilesClear{} },
 	"files.get":         func() Control { return &FilesGet{} },
@@ -375,7 +388,7 @@ var controlByType = map[string]func() Control{
 var clientToServerTypes = []string{
 	"input.key", "input.mouse", "input.wheel", "input.text",
 	"clipboard.set", "clipboard.request",
-	"session.quality", "session.resize", "session.close", "session.cad",
+	"session.quality", "session.resize", "session.close", "session.cad", "session.repaint",
 	"files.offer", "files.clear", "files.get", "files.cancel",
 	"ping",
 }

@@ -2333,3 +2333,30 @@ func TestFrameThatFailsToSendAsksForTheWholeDesktop(t *testing.T) {
 		t.Fatalf("the accumulator asks for %d regions after a failed write, want the whole desktop", len(rects))
 	}
 }
+
+func TestRepaintControlAsksForTheWholeDesktop(t *testing.T) {
+	// The server sends a region when it changes and not before, so a client that
+	// could not draw one has no other way to get it back: it would keep showing
+	// whatever was there until the page was reloaded. This is the control that
+	// lets it ask, and the frame that follows has to be the whole desktop.
+	//
+	// Asserted through the wire rather than by reading the session's flag: the
+	// frame loop consumes that flag the moment it is set, which is the point of
+	// it, so reading it would be a race rather than a check.
+	src := newFakeSource(64, 64)
+	_, _, tr := attachedReconnectSession(t, time.Minute, src)
+
+	src.send(image.Rect(0, 0, 2, 2))
+	waitFor(t, "a frame to be sent", func() bool { return len(tr.allFrames(t)) > 0 })
+	before := len(tr.allFrames(t))
+
+	tr.send(t, wsframe.SessionRepaint{})
+	waitFor(t, "the whole desktop after asking for it", func() bool {
+		for _, f := range tr.allFrames(t)[before:] {
+			if f.IsFull() {
+				return true
+			}
+		}
+		return false
+	})
+}

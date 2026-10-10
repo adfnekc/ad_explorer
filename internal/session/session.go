@@ -522,6 +522,14 @@ func (s *Session) handleControl(c wsframe.Control) bool {
 		s.touch()
 		s.remote.SendCtrlAltEnd()
 
+	case *wsframe.SessionRepaint:
+		// The frame loop reads this flag and turns the next frame into the whole
+		// desktop, which is the only way a client can ask for pixels the server
+		// believes it has already sent.
+		s.mu.Lock()
+		s.repaint = true
+		s.mu.Unlock()
+
 	case *wsframe.ClipboardSet:
 		s.touch()
 		if err := s.remote.SetClipboardText(m.Text); err != nil {

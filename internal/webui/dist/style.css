@@ -155,9 +155,14 @@ fieldset {
   min-height: 0;
   position: relative;
   padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  /* Grid rather than flex, because the canvas is sized by max-width and
+     max-height as percentages. A flex item's height is not definite while it is
+     being calculated, so a percentage max-height against it does nothing and the
+     canvas is laid out at its own size and then clipped — a remote desktop
+     larger than the window lost its edges. A grid area is definite, so both
+     constraints mean something, and the aspect ratio is kept. */
+  display: grid;
+  place-items: center;
   background: var(--face);
   box-shadow: var(--sunken);
   overflow: hidden;

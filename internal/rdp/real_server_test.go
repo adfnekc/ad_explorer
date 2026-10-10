@@ -91,6 +91,46 @@ func TestAgainstARealServer(t *testing.T) {
 	}
 	defer s.Close()
 
+	// ---- pointer shapes ----
+	// The PNG the gateway would send goes to disk so it can be looked at: a shape
+	// that arrives as the wrong pixels is not something a count can show.
+	{
+		seen := 0
+		_ = s.OnCursor(func(cur Cursor) {
+			// Every shape is logged, system or pixels, because the question is
+			// which kind the server sends for a text field's I beam.
+			shape := image.Rectangle{}
+			if cur.Image != nil {
+				shape = cur.Image.Bounds()
+			}
+			t.Logf("cursor event: system=%v type=0x%04x xorbpp=%d size=%dx%d hotspot=%v",
+				cur.System, cur.SystemType, cur.XorBpp, shape.Dx(), shape.Dy(), cur.Hotspot)
+			if cur.System || cur.Image == nil || seen >= 8 {
+				return
+			}
+			seen++
+			b := cur.Image.Bounds()
+			f, err := os.Create(filepath.Join(os.TempDir(),
+				fmt.Sprintf("adx-cursor-%d.png", seen)))
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			if err := png.Encode(f, cur.Image); err != nil {
+				t.Logf("cursor png: %v", err)
+				return
+			}
+			t.Logf("cursor %d: %dx%d hotspot %v", seen, b.Dx(), b.Dy(), cur.Hotspot)
+		})
+	}
+
+	// Hover a text field so the I beam is what the server sends, then another
+	// patch of desktop so it goes back to an arrow.
+	s.MouseMove(180, 745)
+	time.Sleep(1200 * time.Millisecond)
+	s.MouseMove(700, 300)
+	time.Sleep(700 * time.Millisecond)
+
 	// ---- frames (requirement A) ----
 
 	type batch struct {

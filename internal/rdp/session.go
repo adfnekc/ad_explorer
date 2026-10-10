@@ -643,6 +643,11 @@ type Cursor struct {
 	System bool
 	// SystemType is the server's raw system pointer type.
 	SystemType uint32
+	// XorBpp is the depth the shape was decoded at: one for a two colour
+	// pointer, three or four for a colour one. A two colour pointer is the one
+	// that carries the invert pixels, which cannot be represented as a colour,
+	// so a caller that wants to know why a shape looks odd needs this.
+	XorBpp int
 }
 
 // Hidden reports whether the server asked for no pointer at all.
@@ -690,6 +695,7 @@ func (s *Session) OnCursor(f func(Cursor)) error {
 			Hotspot:    cur.Hotspot,
 			System:     cur.System,
 			SystemType: cur.SystemType,
+			XorBpp:     cur.XorBpp,
 		})
 	})
 	return nil

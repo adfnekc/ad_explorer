@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -615,4 +616,185 @@ func dumpFramebuffer(t *testing.T, fb Framebuffer) {
 		return
 	}
 	t.Logf("wrote %s (%dx%d)", path, bounds.Dx(), bounds.Dy())
+}
+
+// driveCopyOnRemote opens a folder on the remote and copies what is in it, so
+// that a transfer can be measured without asking the operator to do it.
+//
+// It is the remote's own keyboard being driven, not a protocol call: the Run
+// dialog, the address, select all, copy. Each step is a wait for a window to
+// appear rather than a fixed confidence, and the waits are generous because a
+// remote desktop that has just opened Explorer is slow to be ready for the next
+// key.
+func driveCopyOnRemote(t *testing.T, s *Session, folder string) {
+	t.Helper()
+	press := func(code string) {
+		t.Helper()
+		chord(t, s, nil, code)
+	}
+	chord(t, s, []string{"MetaLeft"}, "KeyR")
+	time.Sleep(1500 * time.Millisecond)
+
+	if err := s.TypeText(folder); err != nil {
+		t.Fatalf("typing the path: %v", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	press("Enter")
+
+	// Explorer draws before it is ready to be asked for its contents.
+	time.Sleep(4 * time.Second)
+	chord(t, s, []string{"ControlLeft"}, "KeyA")
+	time.Sleep(400 * time.Millisecond)
+	chord(t, s, []string{"ControlLeft"}, "KeyC")
+	time.Sleep(600 * time.Millisecond)
+	t.Log("drove the remote to copy the folder's contents")
+}
+
+// chord presses a modifier, taps a key, and lets the modifier go.
+func chord(t *testing.T, s *Session, mods []string, code string) {
+	t.Helper()
+	for _, m := range mods {
+		if err := s.Key(m, true); err != nil {
+			t.Fatalf("holding %s: %v", m, err)
+		}
+	}
+	if err := s.Key(code, true); err != nil {
+		t.Fatalf("pressing %s: %v", code, err)
+	}
+	if err := s.Key(code, false); err != nil {
+		t.Fatalf("releasing %s: %v", code, err)
+	}
+	for i := len(mods) - 1; i >= 0; i-- {
+		if err := s.Key(mods[i], false); err != nil {
+			t.Fatalf("releasing %s: %v", mods[i], err)
+		}
+	}
+}
+
+// TestRemoteFileThroughput measures copying a file from the remote.
+//
+// It is separate from the input probe because it needs the remote to have put a
+// file on the shared clipboard, which is the only way a manifest ever arrives:
+// in this protocol the side that copies is the side that offers, and a client
+// cannot reach into a path on the remote — that would need drive redirection,
+// which this library does not speak. An empty manifest is reported as such
+// rather than waited on.
+func TestRemoteFileThroughput(t *testing.T) {
+	host := os.Getenv("ADX_TEST_RDP_HOST")
+	if host == "" {
+		t.Skip("ADX_TEST_RDP_HOST is not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	s, err := Dial(ctx, Config{
+		Host: host, User: os.Getenv("ADX_TEST_RDP_USER"), Password: os.Getenv("ADX_TEST_RDP_PASS"),
+		Protocol: "nla", Width: 1024, Height: 768, Timeout: 20 * time.Second, Name: "filebench",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer s.Close()
+
+	files := s.Files()
+	if files == nil {
+		t.Fatal("this session has no file transfer surface")
+	}
+
+	offers := make(chan []RemoteFile, 4)
+	if err := files.OnRemoteFiles(func(list []RemoteFile) { offers <- list }); err != nil {
+		t.Fatalf("OnRemoteFiles: %v", err)
+	}
+
+	// The side that copies is the side that offers, and this client cannot reach
+	// a path on the remote — that would need drive redirection, which this
+	// library does not speak. It can, however, drive the remote's own keyboard,
+	// so when asked it opens the folder and copies the file the way a person
+	// would, and then measures what comes back.
+	if os.Getenv("ADX_TEST_DRIVE_COPY") != "" {
+		driveCopyOnRemote(t, s, os.Getenv("ADX_TEST_COPY_PATH"))
+	}
+
+	// The frames have to be flowing before the remote says anything, and the
+	// manifest arrives as a clipboard update rather than on demand.
+	var manifest []RemoteFile
+	deadline := time.After(20 * time.Second)
+	for manifest == nil {
+		select {
+		case manifest = <-offers:
+		case <-deadline:
+			t.Skip("the remote has not put anything on the shared clipboard; " +
+				"copy a file on the remote first and run this again")
+		}
+	}
+
+	if len(manifest) == 0 {
+		t.Skip("the remote's clipboard has no files on it")
+	}
+	for _, f := range manifest {
+		t.Logf("offered: index=%d name=%q size=%d dir=%v", f.Index, f.Name, f.Size, f.IsDir)
+	}
+
+	var target *RemoteFile
+	for i := range manifest {
+		if !manifest[i].IsDir && strings.Contains(manifest[i].Name, "pinyin_guanwang") {
+			target = &manifest[i]
+			break
+		}
+	}
+	if target == nil {
+		t.Skipf("none of the offered files is the one asked for")
+	}
+
+	// Ranges are read as fast as the protocol answers them, which is the number
+	// being measured: a round trip per range is what the throughput depends on.
+	// The range size is what the throughput depends on, so it is a parameter
+	// rather than a constant: a round trip per range means bytes per second is
+	// range size over latency, and the point of measuring is to find where that
+	// stops being true.
+	rangeSize := 64 << 10
+	if v := os.Getenv("ADX_TEST_RANGE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rangeSize = n
+		}
+	}
+	var read int64
+	var slowest, fastest time.Duration
+	start := time.Now()
+	for read < target.Size {
+		want := rangeSize
+		if remain := target.Size - read; remain < int64(want) {
+			want = int(remain)
+		}
+		t0 := time.Now()
+		data, err := files.ReadRemoteFile(target.Index, read, want)
+		took := time.Since(t0)
+		if err != nil {
+			t.Fatalf("read %d at %d: %v", want, read, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("read returned nothing at %d of %d", read, target.Size)
+		}
+		if slowest == 0 || took > slowest {
+			slowest = took
+		}
+		if fastest == 0 || took < fastest {
+			fastest = took
+		}
+		read += int64(len(data))
+	}
+	elapsed := time.Since(start)
+
+	mbps := float64(read) / (1 << 20) / elapsed.Seconds()
+	t.Logf("read %d bytes in %v = %.2f MB/s", read, elapsed.Round(time.Millisecond), mbps)
+	t.Logf("per range of %d bytes: fastest %v, slowest %v, mean %v",
+		rangeSize, fastest.Round(time.Microsecond), slowest.Round(time.Microsecond),
+		(elapsed / time.Duration(max(1, int(read)/rangeSize))).Round(time.Microsecond))
+
+	// The interesting number is what one round trip costs against what it
+	// carried: a range of this size over this latency is the ceiling, and no
+	// amount of work on this side moves it.
+	t.Logf("if a range costs the mean and carries %d bytes, the ceiling is %.2f MB/s",
+		rangeSize, float64(rangeSize)/(1<<20)/((elapsed / time.Duration(max(1, int(read)/rangeSize))).Seconds()))
 }

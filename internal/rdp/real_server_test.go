@@ -6,10 +6,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/adfnekc/grdp/protocol/pdu"
@@ -797,4 +799,155 @@ func TestRemoteFileThroughput(t *testing.T) {
 	// amount of work on this side moves it.
 	t.Logf("if a range costs the mean and carries %d bytes, the ceiling is %.2f MB/s",
 		rangeSize, float64(rangeSize)/(1<<20)/((elapsed / time.Duration(max(1, int(read)/rangeSize))).Seconds()))
+}
+
+// countingProvider serves one generated file and records how the remote asks
+// for it.
+//
+// The size of each read is the whole question: a paste asks in ranges and pays a
+// round trip for each, so bytes per second is the range size over the latency,
+// and the remote is the side that picks it. A small range here is a ceiling this
+// side cannot lift, and a large one means the slowness is somewhere else.
+type countingProvider struct {
+	data    []byte
+	name    string
+	modMu   sync.Mutex
+	sizes   []int
+	total   int64
+	elapsed time.Duration
+}
+
+func (p *countingProvider) Names() []string { return []string{p.name} }
+
+func (p *countingProvider) Info(name string) (int64, time.Time, bool) {
+	if name != p.name {
+		return 0, time.Time{}, false
+	}
+	return int64(len(p.data)), time.Now(), false
+}
+
+func (p *countingProvider) Open(name string) (io.ReadCloser, error) {
+	if name != p.name {
+		return nil, fmt.Errorf("no such entry %q", name)
+	}
+	return &countingReader{p: p}, nil
+}
+
+type countingReader struct {
+	p   *countingProvider
+	off int64
+}
+
+func (r *countingReader) Read(b []byte) (int, error) {
+	if r.off >= int64(len(r.p.data)) {
+		return 0, io.EOF
+	}
+	start := time.Now()
+	n := copy(b, r.p.data[r.off:])
+	r.off += int64(n)
+	r.p.modMu.Lock()
+	r.p.sizes = append(r.p.sizes, n)
+	r.p.total += int64(n)
+	r.p.elapsed += time.Since(start)
+	r.p.modMu.Unlock()
+	return n, nil
+}
+
+func (r *countingReader) Close() error { return nil }
+
+// TestRemotePasteAskSize offers a file and drives the remote to paste it, then
+// reports how the remote asked for it. This is the direction where the operator
+// reports slowness and the only one whose ceiling is not ours to choose.
+func TestRemotePasteAskSize(t *testing.T) {
+	host := os.Getenv("ADX_TEST_RDP_HOST")
+	if host == "" {
+		t.Skip("ADX_TEST_RDP_HOST is not set")
+	}
+	if os.Getenv("ADX_TEST_DRIVE_COPY") == "" {
+		t.Skip("set ADX_TEST_DRIVE_COPY=1 to let this test drive the remote's paste")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	s, err := Dial(ctx, Config{
+		Host: host, User: os.Getenv("ADX_TEST_RDP_USER"), Password: os.Getenv("ADX_TEST_RDP_PASS"),
+		Protocol: "nla", Width: 1024, Height: 768, Timeout: 20 * time.Second, Name: "pastebench",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer s.Close()
+
+	files := s.Files()
+	if files == nil {
+		t.Fatal("this session has no file transfer surface")
+	}
+
+	const size = 48 << 20
+	content := make([]byte, size)
+	for i := range content {
+		content[i] = byte(i)
+	}
+	provider := &countingProvider{data: content, name: "adx-paste-bench.bin"}
+	files.Offer(provider)
+	t.Logf("offered %s, %d bytes", provider.name, size)
+
+	// Open a folder to paste into, then paste. The destination does not matter
+	// to the measurement; that there is one does, or the paste lands nowhere.
+	chord(t, s, []string{"MetaLeft"}, "KeyR")
+	time.Sleep(1500 * time.Millisecond)
+	if err := s.TypeText(`C:\Users\rdptest\Downloads`); err != nil {
+		t.Fatalf("typing the path: %v", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	chord(t, s, nil, "Enter")
+	time.Sleep(5 * time.Second)
+
+	start := time.Now()
+	chord(t, s, []string{"ControlLeft"}, "KeyV")
+	t.Log("pressed Ctrl+V on the remote")
+
+	deadline := time.After(40 * time.Second)
+	var got []int
+	_ = got
+	for {
+		time.Sleep(500 * time.Millisecond)
+		provider.modMu.Lock()
+		got = append([]int(nil), provider.sizes...)
+		provider.modMu.Unlock()
+		if len(got) >= 8 {
+			break
+		}
+		select {
+		case <-deadline:
+			goto done
+		default:
+		}
+	}
+done:
+	provider.modMu.Lock()
+	sizes, total := append([]int(nil), provider.sizes...), provider.total
+	elapsed := provider.elapsed
+	provider.modMu.Unlock()
+
+	if len(sizes) == 0 {
+		t.Fatalf("the remote never asked for anything in %v", time.Since(start).Round(time.Millisecond))
+	}
+	smallest, largest := sizes[0], sizes[0]
+	for _, n := range sizes {
+		if n < smallest {
+			smallest = n
+		}
+		if n > largest {
+			largest = n
+		}
+	}
+	t.Logf("the remote asked %d times for %d bytes in %v (%.2f MB/s)",
+		len(sizes), total, time.Since(start).Round(time.Millisecond),
+		float64(total)/(1<<20)/time.Since(start).Seconds())
+	t.Logf("asked for min %d, max %d bytes; first few %v", smallest, largest, sizes[:min(len(sizes), 8)])
+	t.Logf("this side spent %v serving them", elapsed.Round(time.Millisecond))
+	t.Logf("at that ask size, one round trip of 20ms would cap the transfer at %.2f MB/s",
+		float64(largest)/(1<<20)/0.020)
 }

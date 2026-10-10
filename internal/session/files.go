@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -45,8 +46,17 @@ type fileTransfer struct {
 	emit       func(wsframe.Control) error
 	emitFrames func([]wsframe.Frame) error
 
-	mu           sync.Mutex
-	offered      []wsframe.OfferedFile
+	mu      sync.Mutex
+	offered []wsframe.OfferedFile
+
+	// Counters behind the two numbers that decide a transfer's speed: the size
+	// the remote asks for, and how long the client takes to answer.
+	reads        int
+	readBytes    int64
+	minRead      int
+	maxRead      int
+	clientWait   time.Duration
+	clientCalls  int
 	manifest     []rdp.RemoteFile
 	pendingRange map[uint32]chan []byte
 	nextToken    uint32
@@ -237,6 +247,12 @@ func (f *browserFile) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	// The size of p is the size the remote's paste asked for, which is the
+	// number the transfer's speed is made of: one round trip is spent per read,
+	// so bytes per second is this size over the latency, and the side that
+	// chooses it is the remote. Recording it is the only way to tell a remote
+	// asking in small ranges from this side being slow to answer them.
+	f.ft.recordRequest(len(p))
 	if f.size > 0 && f.off >= f.size {
 		return 0, io.EOF
 	}
@@ -294,6 +310,30 @@ func (f *browserFile) Close() error {
 	return nil
 }
 
+// recordRequest notes how much one remote read asked for, and reports the
+// distribution once there is enough of it to mean something.
+func (ft *fileTransfer) recordRequest(n int) {
+	ft.mu.Lock()
+	ft.reads++
+	ft.readBytes += int64(n)
+	if ft.minRead == 0 || n < ft.minRead {
+		ft.minRead = n
+	}
+	if n > ft.maxRead {
+		ft.maxRead = n
+	}
+	reads, bytes, min, max := ft.reads, ft.readBytes, ft.minRead, ft.maxRead
+	ft.mu.Unlock()
+
+	// Once at a fixed count, and then not again, so a large file does not turn
+	// the gateway log into a wall of numbers.
+	if reads == 200 {
+		log.Printf("session: the remote asked for %d reads averaging %d bytes (min %d, max %d); "+
+			"that size over the round trip is the transfer's ceiling",
+			reads, bytes/int64(reads), min, max)
+	}
+}
+
 // fetchRange asks the client for a range of an offered file and waits for it.
 func (ft *fileTransfer) fetchRange(name string, off int64, length int) ([]byte, error) {
 	ft.mu.Lock()
@@ -313,8 +353,21 @@ func (ft *fileTransfer) fetchRange(name string, off int64, length int) ([]byte, 
 		return nil, err
 	}
 
+	start := time.Now()
 	select {
 	case data := <-ch:
+		// How long the client took, which is this side's own contribution to the
+		// latency of a remote read. If it is small next to the round trip to the
+		// server then no amount of work here moves the transfer.
+		ft.mu.Lock()
+		ft.clientWait += time.Since(start)
+		ft.clientCalls++
+		wait, calls := ft.clientWait, ft.clientCalls
+		ft.mu.Unlock()
+		if calls == 200 {
+			log.Printf("session: %d answers from the client averaged %v each; "+
+				"that is what this side adds to a remote read", calls, (wait / time.Duration(calls)).Round(time.Microsecond))
+		}
 		return data, nil
 	case <-time.After(fileRangeTimeout):
 		return nil, fmt.Errorf("session: the client did not answer a request for %d bytes of %q at %d within %s",

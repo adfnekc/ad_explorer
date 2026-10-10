@@ -30,6 +30,7 @@ const (
 	// waiting for them; four megabytes made each round trip four times longer for
 	// the same bytes. That is what a bandwidth limit looks like, and it means this
 	// number is a memory and progress setting rather than a speed one.
+	downloadChunk = 1 << 20
 	// maxConcurrentDownloads bounds how many files a client may pull at once,
 	// so a misbehaving one cannot open an unbounded number of remote reads.
 	maxConcurrentDownloads = 4

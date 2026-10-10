@@ -3,7 +3,7 @@ module github.com/adfnekc/ad_explorer
 go 1.24
 
 require (
-	github.com/adfnekc/grdp v0.8.5-0.20261009062140-c4137bbd983a
+	github.com/adfnekc/grdp v0.8.6-0.20261010074854-2000e7694e4d
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/image v0.0.0-20220617043117-41969df76e82
 )

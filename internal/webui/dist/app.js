@@ -758,6 +758,26 @@ const drawQueue = [];
 let drawing = false;
 
 function handleFrame(buffer) {
+  // Frames are numbered once each by the gateway, so a number that is not the
+  // one after the last means a frame never arrived and the pixels it carried
+  // will not be sent again. The count is kept here, on arrival, rather than
+  // where the frame is drawn: a frame this page threw away on purpose is one
+  // that did arrive, and counting that as a gap would make the number mean
+  // nothing.
+  //
+  // Only image frames are numbered — a cursor frame and a file chunk carry a
+  // token in that field — so anything else must not be counted at all.
+  if (buffer.byteLength >= HEADER_LEN && new DataView(buffer).getUint8(0) === TYPE_IMAGE) {
+    const seq = new DataView(buffer).getUint32(12, true);
+    if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
+      state.seqGaps++;
+      // Asking for the whole desktop is the only way back to pixels the server
+      // believes the client already holds.
+      send({ type: 'session.repaint' });
+    }
+    state.lastSeq = seq;
+  }
+
   // A full frame covers the whole desktop, so anything still waiting is already
   // represented by it. Dropping the queue at that point is what stops a slow
   // decoder from replaying history, and the order of what is left is untouched.
@@ -805,19 +825,6 @@ async function drawFrame(buffer) {
     return;
   }
 
-  // The gateway numbers image frames once each and never resets the count, so a
-  // number that is not the one after the last means a frame never arrived. A
-  // region the server has sent is one it will not send again — it has no way to
-  // know it was missed — so the hole would stay until the page was reloaded.
-  // Only image frames are numbered: a cursor frame and a file chunk carry a
-  // token in that field instead.
-  if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
-    state.seqGaps++;
-    // Asking for the whole desktop is the only way to recover pixels the server
-    // believes the client already holds.
-    send({ type: 'session.repaint' });
-  }
-  state.lastSeq = seq;
   state.framesDrawn++;
   renderInputTelemetry();
 

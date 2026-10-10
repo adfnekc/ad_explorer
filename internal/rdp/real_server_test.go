@@ -116,7 +116,7 @@ func TestAgainstARealServer(t *testing.T) {
 			t.Logf("cursor event: system=%v type=0x%04x xorbpp=%d size=%dx%d hotspot=%v xor=%dB and=%dB want=%dB",
 				cur.System, cur.SystemType, cur.XorBpp, shape.Dx(), shape.Dy(), cur.Hotspot,
 				cur.RawXorLen, cur.RawAndLen, want)
-			if cur.System || cur.Image == nil || cur.XorBpp != 3 || seen >= 4 {
+			if cur.System || cur.Image == nil || seen >= 20 {
 				return
 			}
 			seen++

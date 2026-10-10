@@ -87,7 +87,7 @@ const state = {
   // reports no pointer position while the counters climb is a remote that is
   // receiving nothing, and counters that do not climb are the browser not
   // sending — two different problems with the same symptom on screen.
-  sent: { move: 0, button: 0, key: 0, text: 0, wheel: 0 },
+  sent: { move: 0, button: 0, key: 0, text: 0, wheel: 0, wheelEvents: 0 },
   remoteCursor: null,
   // systemCursor is the last pointer the server named, or null when it sent a
   // shape of its own or has not named one yet.
@@ -797,7 +797,8 @@ function renderInputTelemetry() {
   if (!t) return;
   const s = state.sent;
   t.textContent =
-    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · 滚轮 ${s.wheel}` +
+    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · ` +
+    `滚轮 ${s.wheel}刻度/${s.wheelEvents}次` +
     (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
     (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`);
 }
@@ -1203,6 +1204,11 @@ const wheelPerNotch = (mode) => {
 el.screen.addEventListener('wheel', (event) => {
   event.preventDefault();
   const { x, y } = remotePoint(event);
+  // Counted separately from the notches, because the two together are what says
+  // whether a direction reports smaller deltas than the other. One event per
+  // notch in both directions means the deltas are symmetrical and the
+  // asymmetry is further down.
+  state.sent.wheelEvents++;
   wheelAccumulator += -event.deltaY / wheelPerNotch(event.deltaMode);
   const notches = Math.trunc(wheelAccumulator);
   if (notches === 0) return;

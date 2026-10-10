@@ -92,6 +92,12 @@ const state = {
   // sending — two different problems with the same symptom on screen.
   sent: { move: 0, button: 0, key: 0, text: 0, wheel: 0, wheelEvents: 0 },
   remoteCursor: null,
+  // lastSeq, seqGaps and framesDrawn are how the client tells a desktop it has
+  // and a desktop it thinks it has: the gateway numbers frames so a missing one
+  // can be noticed rather than painted over.
+  lastSeq: null,
+  seqGaps: 0,
+  framesDrawn: 0,
   // systemCursor is the last pointer the server named, or null when it sent a
   // shape of its own or has not named one yet.
   systemCursor: null,
@@ -785,6 +791,7 @@ async function drawFrame(buffer) {
   const y = view.getUint16(6, true);
   const w = view.getUint16(8, true);
   const h = view.getUint16(10, true);
+  const seq = view.getUint32(12, true);
 
   if (type === TYPE_FILE) {
     receiveFileChunk(buffer);
@@ -797,6 +804,22 @@ async function drawFrame(buffer) {
   if (type !== TYPE_IMAGE) {
     return;
   }
+
+  // The gateway numbers image frames once each and never resets the count, so a
+  // number that is not the one after the last means a frame never arrived. A
+  // region the server has sent is one it will not send again — it has no way to
+  // know it was missed — so the hole would stay until the page was reloaded.
+  // Only image frames are numbered: a cursor frame and a file chunk carry a
+  // token in that field instead.
+  if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
+    state.seqGaps++;
+    // Asking for the whole desktop is the only way to recover pixels the server
+    // believes the client already holds.
+    send({ type: 'session.repaint' });
+  }
+  state.lastSeq = seq;
+  state.framesDrawn++;
+  renderInputTelemetry();
 
   const payload = new Uint8Array(buffer, HEADER_LEN);
   const mime = format === FORMAT_WEBP ? 'image/webp' : 'image/jpeg';
@@ -843,7 +866,9 @@ function renderInputTelemetry() {
     `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · ` +
     `滚轮 ${s.wheel}刻度/${s.wheelEvents}次` +
     (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
-    (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`);
+    (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`) +
+    ` · 帧 ${state.framesDrawn}` +
+    (state.seqGaps ? ` · 缺口 ${state.seqGaps}` : '');
 }
 
 // ---------------------------------------------------------------- files

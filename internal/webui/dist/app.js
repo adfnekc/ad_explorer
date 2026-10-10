@@ -84,6 +84,9 @@ const state = {
   // sending — two different problems with the same symptom on screen.
   sent: { move: 0, button: 0, key: 0, text: 0, wheel: 0 },
   remoteCursor: null,
+  // systemCursor is the last pointer the server named, or null when it sent a
+  // shape of its own or has not named one yet.
+  systemCursor: null,
   // lastCloseCode is why the socket last closed, so the message shown when the
   // budget runs out can say whether another browser is holding the session.
   lastCloseCode: 0,
@@ -415,6 +418,7 @@ function openSocket(id, reconnecting) {
     el.cad.disabled = false;
     el.fullscreen.disabled = false;
     el.disconnect.disabled = false;
+    renderDisconnectButton();
     el.sendClipboard.disabled = false;
     el.requestClipboard.disabled = false;
     el.resolution.disabled = false;
@@ -544,6 +548,7 @@ function endSession() {
   el.cad.disabled = true;
   el.fullscreen.disabled = true;
   el.disconnect.disabled = true;
+  renderDisconnectButton();
   el.sendClipboard.disabled = true;
   el.requestClipboard.disabled = true;
   el.resolution.disabled = true;
@@ -783,7 +788,8 @@ function renderInputTelemetry() {
   const s = state.sent;
   t.textContent =
     `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · 滚轮 ${s.wheel}` +
-    (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报');
+    (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
+    (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`);
 }
 
 // ---------------------------------------------------------------- files
@@ -1013,20 +1019,43 @@ function applyCursorImage(buffer, hotspotX, hotspotY) {
 
 // applySystemCursor handles the pointers a server names instead of drawing.
 //
-// Only the two values the specification names are mapped. The rest of the
-// enumeration is left to the browser's arrow: showing an arrow where an I beam
-// belongs is a small wrong, and showing the wrong shape where a resize handle
-// belongs is a confusing one, so the gateway does not guess at values it has not
-// verified against a server.
+// applySystemCursor handles the pointers a server names instead of drawing.
+//
+// The whole enumeration is mapped, not just the two values the specification
+// spells out. Leaving the rest to the browser's arrow made the I beam over a
+// text field — the one a person meets most often — an arrow, which reads as the
+// cursor being drawn wrongly rather than as a shape that was not translated.
+//
+// The raw value is shown in the telemetry as it arrives, because an enumeration
+// transcribed from a document is exactly the sort of thing that is wrong in a
+// way nobody notices until it lands on the wrong shape.
+const SYSTEM_CURSORS = new Map([
+  [0x00007f00, 'default'], // default arrow
+  [0x00007f01, 'default'], // arrow
+  [0x00007f02, 'text'], // I beam
+  [0x00007f03, 'wait'],
+  [0x00007f04, 'crosshair'],
+  [0x00007f05, 'default'], // upward arrow
+  [0x00007f06, 'nwse-resize'],
+  [0x00007f07, 'nesw-resize'],
+  [0x00007f08, 'ew-resize'],
+  [0x00007f09, 'ns-resize'],
+  [0x00007f0a, 'move'],
+  [0x00007f0b, 'not-allowed'],
+  [0x00007f0e, 'progress'],
+  [0x00007f0f, 'help'],
+]);
+
 const SYSPTR_NULL = 0x00000000;
-const SYSPTR_DEFAULT = 0x00007f00;
 
 function applySystemCursor(systemType, hidden) {
+  state.systemCursor = systemType;
   if (hidden || systemType === SYSPTR_NULL) {
     el.screen.style.cursor = 'none';
-    return;
+  } else {
+    el.screen.style.cursor = SYSTEM_CURSORS.get(systemType) || 'default';
   }
-  el.screen.style.cursor = systemType === SYSPTR_DEFAULT ? 'default' : 'default';
+  renderInputTelemetry();
 }
 
 function setCursorDefault() {
@@ -1226,7 +1255,32 @@ function browserShortcut(event) {
   return false;
 }
 
-el.disconnect.addEventListener('click', () => disconnect());
+// The same button disconnects and connects.
+//
+// When there is no session it is the only way forward, so it says so and is
+// marked as the primary action rather than sitting disabled under a label that
+// describes something that cannot happen.
+function renderDisconnectButton() {
+  const live = Boolean(state.session);
+  el.disconnect.textContent = live ? '断开' : '连接';
+  el.disconnect.classList.toggle('primary', !live);
+  el.disconnect.disabled = false;
+}
+
+// connectOffer is what the button does when nothing is connected: the first host
+// that has been saved, or the form to make one.
+function connectOffer() {
+  if (state.hosts.length > 0) {
+    connect(state.hosts[0]);
+    return;
+  }
+  openHostForm();
+}
+
+el.disconnect.addEventListener('click', () => {
+  if (state.session) disconnect();
+  else connectOffer();
+});
 
 el.cad.addEventListener('click', () => send({ type: 'session.cad' }));
 
@@ -1374,6 +1428,7 @@ function showWorkspace() {
   el.login.hidden = true;
   el.workspace.hidden = false;
   loadHosts();
+  renderDisconnectButton();
   renderHosts();
   renderClipboard();
   renderOffered();

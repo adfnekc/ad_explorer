@@ -90,7 +90,8 @@
         </select>
         <button class="act" type="button" id="cad" disabled>Ctrl+Alt+Del</button>
         <button class="act" type="button" id="fullscreen" disabled>全屏</button>
-        <button class="act" type="button" id="disconnect" disabled>断开</button>
+        <!-- Starts as the way in, because nothing is connected yet. -->
+        <button class="act primary" type="button" id="disconnect">连接</button>
       </div>
 
       <!-- Immersive mode hides the bars, including the button that got you
@@ -102,11 +103,14 @@
       <div id="stage">
         <div id="viewport">
           <canvas id="screen" width="1280" height="720"></canvas>
-          <div id="overlay">
-            <span class="pill" id="stats">idle</span>
-            <span class="pill" id="capability"></span>
-          </div>
         </div>
+      </div>
+
+      <!-- Outside #viewport on purpose. These used to sit over the canvas, and a
+           readout that covers the desktop it is reporting on is in the way. -->
+      <div id="overlay">
+        <span class="pill" id="stats">idle</span>
+        <span class="pill" id="capability"></span>
       </div>
 
       <div class="bar">

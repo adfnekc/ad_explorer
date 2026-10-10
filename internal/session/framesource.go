@@ -166,6 +166,10 @@ type grdpSource struct {
 	pool   *framePool
 
 	updates chan Update
+
+	// dropped records that an update never reached the frame loop, so the next
+	// one has to carry the whole desktop instead of only its own regions.
+	dropped bool
 }
 
 // grdpFrames builds a frame source over the grdp framebuffer.
@@ -237,11 +241,25 @@ func (s *grdpSource) onFrame(dirty []image.Rectangle) {
 		// copy, so nothing is lost by waiting: the next callback republishes
 		// this region along with its own, because the desktop copy still has
 		// both.
+		// The regions are lost, so the desktop as a whole has to be published
+		// again: the pixels are in our copy, but the client will never be told
+		// that they changed, and the source only reports a region when it
+		// changes. Without this the client keeps whatever it had there, which is
+		// a block of the old window left behind and lasts until the page is
+		// reloaded and given a full frame.
+		s.dropped = true
 		s.mu.Unlock()
 		return
 	}
 	copy(buf.Pix, s.cur.Pix)
 	regions := clipAll(dirty, s.bounds)
+	if s.dropped {
+		// Something was dropped since the last publish, so this one carries the
+		// whole desktop: it is the only way to be sure the client ends up with
+		// everything, because what was dropped is not known any more.
+		regions = []image.Rectangle{s.bounds}
+		s.dropped = false
+	}
 	s.mu.Unlock()
 
 	update := Update{
@@ -252,8 +270,13 @@ func (s *grdpSource) onFrame(dirty []image.Rectangle) {
 	select {
 	case s.updates <- update:
 	default:
-		// Nothing is draining the channel; give the buffer straight back rather
-		// than holding it until the next update.
+		// Nothing is draining the channel, so this update's regions are lost
+		// along with it. The pixels are in our copy, and the next publish is
+		// made to carry the whole desktop so that the client is told about them
+		// after all.
+		s.mu.Lock()
+		s.dropped = true
+		s.mu.Unlock()
 		update.Release()
 	}
 }

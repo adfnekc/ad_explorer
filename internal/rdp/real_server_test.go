@@ -712,22 +712,36 @@ func TestRemoteFileThroughput(t *testing.T) {
 	// The side that copies is the side that offers, and this client cannot reach
 	// a path on the remote — that would need drive redirection, which this
 	// library does not speak. It can, however, drive the remote's own keyboard,
-	// so when asked it opens the folder and copies the file the way a person
-	// would, and then measures what comes back.
+	// so it opens the folder and copies the file the way a person would.
+	//
+	// The drive is retried rather than trusted: opening a folder and pressing
+	// keys into whatever window came up depends on the remote being ready, and a
+	// single attempt failed often enough that a skip looked like the clipboard
+	// being empty when it was the driving that missed.
+	var manifest []RemoteFile
 	if os.Getenv("ADX_TEST_DRIVE_COPY") != "" {
-		driveCopyOnRemote(t, s, os.Getenv("ADX_TEST_COPY_PATH"))
+		for attempt := 1; attempt <= 3 && manifest == nil; attempt++ {
+			driveCopyOnRemote(t, s, os.Getenv("ADX_TEST_COPY_PATH"))
+			select {
+			case manifest = <-offers:
+				t.Logf("the remote offered its clipboard after attempt %d", attempt)
+			case <-time.After(8 * time.Second):
+				t.Logf("attempt %d produced nothing", attempt)
+			}
+		}
 	}
 
-	// The frames have to be flowing before the remote says anything, and the
-	// manifest arrives as a clipboard update rather than on demand.
-	var manifest []RemoteFile
-	deadline := time.After(20 * time.Second)
-	for manifest == nil {
-		select {
-		case manifest = <-offers:
-		case <-deadline:
-			t.Skip("the remote has not put anything on the shared clipboard; " +
-				"copy a file on the remote first and run this again")
+	// The manifest arrives as a clipboard update rather than on demand, so when
+	// nothing was driven it has to be waited for.
+	if manifest == nil {
+		deadline := time.After(20 * time.Second)
+		for manifest == nil {
+			select {
+			case manifest = <-offers:
+			case <-deadline:
+				t.Skip("the remote has not put anything on the shared clipboard; " +
+					"copy a file on the remote first and run this again")
+			}
 		}
 	}
 
@@ -789,6 +803,32 @@ func TestRemoteFileThroughput(t *testing.T) {
 	elapsed := time.Since(start)
 
 	mbps := float64(read) / (1 << 20) / elapsed.Seconds()
+
+	// The same bytes a second time. The remote has them in its page cache by
+	// now, so a much faster second pass means the limit was the remote's disk
+	// and not the path between here and there. An unchanged one means the
+	// bytes are being moved at the same rate either way, which is a bandwidth
+	// limit in the transfer itself.
+	second := time.Now()
+	var again int64
+	for again < target.Size {
+		want := rangeSize
+		if remain := target.Size - again; remain < int64(want) {
+			want = int(remain)
+		}
+		data, err := files.ReadRemoteFile(target.Index, again, want)
+		if err != nil {
+			t.Fatalf("second pass at %d: %v", again, err)
+		}
+		if len(data) == 0 {
+			break
+		}
+		again += int64(len(data))
+	}
+	secondTook := time.Since(second)
+	t.Logf("second pass: %d bytes in %v = %.2f MB/s (%.2fx the first)",
+		again, secondTook.Round(time.Millisecond),
+		float64(again)/(1<<20)/secondTook.Seconds(), elapsed.Seconds()/secondTook.Seconds())
 	t.Logf("read %d bytes in %v = %.2f MB/s", read, elapsed.Round(time.Millisecond), mbps)
 	t.Logf("per range of %d bytes: fastest %v, slowest %v, mean %v",
 		rangeSize, fastest.Round(time.Microsecond), slowest.Round(time.Microsecond),

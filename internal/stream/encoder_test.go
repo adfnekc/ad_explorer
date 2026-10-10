@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	_ "image/jpeg"
+	_ "image/png"
 	"testing"
 
 	"github.com/adfnekc/ad_explorer/internal/wsframe"

@@ -118,6 +118,20 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 	bounds := acc.Bounds()
 	frames := make([]wsframe.Frame, 0, len(rects))
 	for _, r := range rects {
+		// The rectangle is clipped here, before the pixels are taken, so that
+		// the header and the payload describe the same thing. The client scales
+		// a region to the rectangle it is given, so a header that says more than
+		// the payload holds stretches the pixels across the difference, and the
+		// area it stretches into stays wrong until something else repaints it.
+		// Clipping inside crop alone was enough to leave the header saying one
+		// thing and the payload another.
+		r = r.Intersect(bounds)
+		if r.Empty() {
+			// No pixels to draw: skipping it cannot lose any, whereas letting it
+			// reach the encoder fails the whole frame and takes the regions that
+			// were already built with it.
+			continue
+		}
 		region, err := crop(src, r, bounds)
 		if err != nil {
 			return nil, err

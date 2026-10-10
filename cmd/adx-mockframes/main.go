@@ -147,6 +147,15 @@ func serveStream(w http.ResponseWriter, r *http.Request) {
 	send(false, 0, 0, cellW, cellH, solid(color.RGBA{40, 200, 40, 255}, cellW, cellH))
 	send(false, cellW, cellH, cellW, cellH, solid(color.RGBA{230, 230, 40, 255}, cellW, cellH))
 
+	// Overlapping regions at offsets that are not zero, which is the shape a
+	// dragged window makes: the pixels of the two overlap and the later one has
+	// to win there. The first script never put a region anywhere but the origin,
+	// so a client that ignored the offset entirely would have passed it.
+	//
+	// A spans x 40..120, y 40..100. B spans x 80..160, y 70..130.
+	send(false, 40, 40, 80, 60, solid(color.RGBA{230, 40, 40, 255}, 80, 60))
+	send(false, 80, 70, 80, 60, solid(color.RGBA{40, 40, 230, 255}, 80, 60))
+
 	// Hold the connection open so the page can be looked at, and so a second
 	// sequence can be asked for by reloading.
 	for {

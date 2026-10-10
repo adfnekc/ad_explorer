@@ -134,6 +134,9 @@ const el = {
   fPassword: $('fPassword'),
   fProtocol: $('fProtocol'),
   fSize: $('fSize'),
+  fWidth: $('fWidth'),
+  fHeight: $('fHeight'),
+  customSize: $('customSize'),
 
   sessionBar: $('sessionBar'),
   sessionLabel: $('sessionLabel'),
@@ -316,6 +319,12 @@ function renderHosts() {
   }
 }
 
+// A stored size is a preset or a pair of numbers from the custom row. Anything
+// that is not one of the presets is shown as custom, so a host added before the
+// custom row existed, or edited here, still opens with its numbers in the boxes
+// rather than silently reverting to 1280x720 on the next save.
+const PRESET_SIZES = ['1280x720', '1920x1080', '1024x768', '640x480'];
+
 function openHostForm(id) {
   state.editingHostId = id || null;
   const host = id ? hostById(id) : null;
@@ -325,7 +334,14 @@ function openHostForm(id) {
   el.fUser.value = host ? host.user || '' : '';
   el.fPassword.value = host ? host.password || '' : '';
   el.fProtocol.value = host ? host.protocol || 'nla' : 'nla';
-  el.fSize.value = host ? host.size || '1280x720' : '1280x720';
+  // Taken from the host rather than from the form, which still holds whatever
+  // was there before this one was opened.
+  const hostSize = host ? host.size || '1280x720' : '1280x720';
+  const [hostWidth, hostHeight] = hostSize.split('x').map(Number);
+  el.fSize.value = PRESET_SIZES.includes(hostSize) ? hostSize : 'custom';
+  el.fWidth.value = (host && host.width) || hostWidth || 1280;
+  el.fHeight.value = (host && host.height) || hostHeight || 720;
+  showCustomSize();
   el.deleteHost.hidden = !host;
   el.hostForm.hidden = false;
   el.fHost.focus();
@@ -336,9 +352,41 @@ function closeHostForm() {
   state.editingHostId = null;
 }
 
+function sizeFromForm() {
+  const preset = el.fSize.value;
+  if (preset !== 'custom') {
+    const [width, height] = preset.split('x').map(Number);
+    return { preset, size: preset, width, height };
+  }
+  const width = Math.round(Number(el.fWidth.value));
+  const height = Math.round(Number(el.fHeight.value));
+  if (!validSize(width, height)) return null;
+  return { preset, size: `${width}x${height}`, width, height };
+}
+
+function showCustomSize() {
+  el.customSize.hidden = el.fSize.value !== 'custom';
+}
+
+// The remote is asked for this size, so a value it cannot honour means no
+// picture at all rather than a smaller one. The bounds are wide enough for any
+// real desktop and narrow enough that a mistyped digit is caught here.
+function validSize(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+  if (width < 200 || height < 200 || width > 8192 || height > 8192) return false;
+  return true;
+}
+
+el.fSize.addEventListener('change', showCustomSize);
+
 el.hostForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const [width, height] = el.fSize.value.split('x').map(Number);
+  const size = sizeFromForm();
+  if (!size) {
+    note('自定义分辨率要在 200 到 8192 之间。', 'error');
+    return;
+  }
+  const { width, height } = size;
   const entry = {
     id: state.editingHostId || newId(),
     name: el.fName.value.trim() || el.fHost.value.trim(),
@@ -347,7 +395,7 @@ el.hostForm.addEventListener('submit', (event) => {
     user: el.fUser.value.trim(),
     password: el.fPassword.value,
     protocol: el.fProtocol.value,
-    size: el.fSize.value,
+    size: size.size,
     width,
     height,
   };

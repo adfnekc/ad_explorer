@@ -65,7 +65,13 @@
             <option value="1920x1080">1920 × 1080</option>
             <option value="1024x768">1024 × 768</option>
             <option value="640x480">640 × 480</option>
+            <option value="custom">自定义…</option>
           </select>
+          <div class="row" id="customSize" style="display:flex;gap:6px;align-items:center;margin-top:6px" hidden>
+            <input id="fWidth" type="number" min="200" max="8192" step="1" placeholder="宽" style="width:100%">
+            <span class="label">×</span>
+            <input id="fHeight" type="number" min="200" max="8192" step="1" placeholder="高" style="width:100%">
+          </div>
           <div class="row" style="display:flex;gap:6px;margin-top:10px">
             <button class="act primary" type="submit">连接</button>
             <button class="act" type="button" id="cancelHost">取消</button>

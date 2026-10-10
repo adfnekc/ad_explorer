@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adfnekc/grdp/protocol/pdu"
+
 	"time"
 )
 
@@ -103,15 +105,21 @@ func TestAgainstARealServer(t *testing.T) {
 			if cur.Image != nil {
 				shape = cur.Image.Bounds()
 			}
-			t.Logf("cursor event: system=%v type=0x%04x xorbpp=%d size=%dx%d hotspot=%v",
-				cur.System, cur.SystemType, cur.XorBpp, shape.Dx(), shape.Dy(), cur.Hotspot)
-			if cur.System || cur.Image == nil || seen >= 8 {
+			// What a 32bpp shape of this size would need, against what arrived.
+			want := 0
+			if cur.XorBpp > 0 && shape.Dx() > 0 {
+				want = pdu.PointerXorRowBytes(shape.Dx(), cur.XorBpp) * shape.Dy()
+			}
+			t.Logf("cursor event: system=%v type=0x%04x xorbpp=%d size=%dx%d hotspot=%v xor=%dB and=%dB want=%dB",
+				cur.System, cur.SystemType, cur.XorBpp, shape.Dx(), shape.Dy(), cur.Hotspot,
+				cur.RawXorLen, cur.RawAndLen, want)
+			if cur.System || cur.Image == nil || cur.XorBpp != 3 || seen >= 4 {
 				return
 			}
 			seen++
 			b := cur.Image.Bounds()
 			f, err := os.Create(filepath.Join(os.TempDir(),
-				fmt.Sprintf("adx-cursor-%d.png", seen)))
+				fmt.Sprintf("adx-cursor-%d-bpp%d-%dx%d.png", seen, cur.XorBpp, shape.Dx(), shape.Dy())))
 			if err != nil {
 				return
 			}

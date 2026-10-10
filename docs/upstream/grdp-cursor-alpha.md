@@ -12,6 +12,28 @@ whose body is white and whose AND mask is mostly set, so almost the whole pointe
 is drawn as a dither pattern instead of a solid shape. The I beam in particular
 is unrecognisable.
 
+## Measured on the failing target
+
+`OnCursor` reports these shapes on Windows 10 LTSC 19041, 1024x768. Only the
+I beam matters here:
+
+| shape | XorBpp | size | hotspot | xor bytes | and bytes |
+|---|---|---|---|---|---|
+| arrow | 4 | 41x39 | (3,3) | 6396 | 234 |
+| **I beam** | **3** | **32x32** | **(8,9)** | **3072** | **128** |
+| pointer over a link | 4 | 32x32 | (0,0) | 4096 | 128 |
+
+Both masks are the full size the depth and dimensions require, so nothing is
+truncated. The I beam is the **24bpp** case, not the 32bpp one: it has no alpha
+channel, which is what makes `colourCursorPixel` decide its pixels at all.
+
+Hotspot (8,9) on a 32x32 shape is the middle of the left hand side, which is
+where an I beam's bar sits, so the shape really is the I beam and it is the
+decoding of it that is wrong.
+
+The client receives a 32x32 PNG with 40 opaque pixels: four small squares. An
+I beam is a vertical bar with a cap at each end, which is far more than that.
+
 ## Environment
 
 - grdp `v0.8.5-0.20261009062140-c4137bbd983a` (also seen on `v0.8.4`)

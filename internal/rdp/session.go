@@ -544,14 +544,37 @@ func (s *Session) MouseButton(button int, down bool, x, y int) {
 	}
 }
 
-// MouseWheel turns the wheel at a point. Delta is in notches and positive
-// means away from the user; grdp clamps the magnitude to the protocol's field.
+// MouseWheel turns the wheel at a point. Delta is in notches and positive means
+// away from the user.
+//
+// The wire field counts in units of 120 degrees, so a notch is 120 and not 1.
+// The library clamps to the nine bit field the field actually is, which is two
+// notches, so a larger delta is sent as several messages rather than being
+// silently cut down to two. Messages are sent separately because the field has
+// no room for the total, not because the server needs them one at a time.
 func (s *Session) MouseWheel(delta, x, y int) {
 	if !s.live() {
 		return
 	}
-	s.sink.MouseWheel(delta, x, y)
+	for delta != 0 {
+		step := delta
+		if step > maxWheelNotches {
+			step = maxWheelNotches
+		} else if step < -maxWheelNotches {
+			step = -maxWheelNotches
+		}
+		s.sink.MouseWheel(step*wheelUnitsPerNotch, x, y)
+		delta -= step
+	}
 }
+
+const (
+	// wheelUnitsPerNotch is 120 degrees, the unit the field is documented in.
+	wheelUnitsPerNotch = 120
+	// maxWheelNotches is the largest whole number of notches that fits the nine
+	// bit field, which is what the library clamps to.
+	maxWheelNotches = 2
+)
 
 // sendPreamble sends the input sequence mstsc sends once the session is ready: a
 // Tab release, the toggle key state, then another Tab release. Both mstsc and

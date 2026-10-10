@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -72,6 +73,42 @@ func newTestSession() (*Session, *fakeSink) {
 	return s, sink
 }
 
+// The rotation field is nine bits of two's complement and a notch is 120, so it
+// holds two notches. More than that has to be sent as several messages: cutting
+// it down to two would make a fast scroll move a third as far as it should,
+// which reads as the wheel being insensitive rather than as a lost message.
+func TestWheelSplitsToFitTheField(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		delta int
+		want  []string
+	}{
+		{"one notch", 1, []string{"wheel 120 7 8"}},
+		{"negative", -1, []string{"wheel -120 7 8"}},
+		{"the most that fits", 2, []string{"wheel 240 7 8"}},
+		{"one past that", 3, []string{"wheel 240 7 8", "wheel 120 7 8"}},
+		{"negative one past", -3, []string{"wheel -240 7 8", "wheel -120 7 8"}},
+		{"seven", 7, []string{
+			"wheel 240 7 8", "wheel 240 7 8", "wheel 240 7 8", "wheel 120 7 8"}},
+		{"nothing", 0, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, sink := newTestSession()
+			defer s.Close()
+			s.MouseWheel(tc.delta, 7, 8)
+			var got []string
+			for _, c := range sink.calls {
+				if strings.HasPrefix(c, "wheel") {
+					got = append(got, c)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("wheel %d: got %v, want %v", tc.delta, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSessionInputRouting(t *testing.T) {
 	s, sink := newTestSession()
 	defer s.Close()
@@ -86,6 +123,7 @@ func TestSessionInputRouting(t *testing.T) {
 	s.MouseButton(0, true, 100, 200)
 	s.MouseButton(0, false, 100, 200)
 	s.MouseButton(2, true, 5, 6)
+	// Three notches, which is more than the field holds, so it goes as two.
 	s.MouseWheel(-3, 7, 8)
 
 	want := []string{
@@ -95,7 +133,8 @@ func TestSessionInputRouting(t *testing.T) {
 		"btn0 down 100 200",
 		"btn0 up 100 200",
 		"btn2 down 5 6",
-		"wheel -3 7 8",
+		"wheel -240 7 8",
+		"wheel -120 7 8",
 	}
 	got := sink.got()
 	if len(got) != len(want) {

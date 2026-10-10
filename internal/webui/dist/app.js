@@ -1028,6 +1028,23 @@ el.filePicker.addEventListener('change', () => {
   el.filePicker.value = ''; // so the same file can be offered again
 });
 
+// Files copied on the machine in front of the operator reach the remote the way
+// native RDP does: copy here, paste there, with nothing asked in between.
+//
+// The files ride on the paste event because that is the one clipboard read a
+// page gets without asking for a permission, and because the gesture is what the
+// copy was. Only a clipboard holding real files arrives this way: a file manager
+// can instead put a list of paths on the clipboard, which a page cannot open
+// without the operator picking them, and that case falls through to the picker.
+document.addEventListener('paste', (event) => {
+  if (!state.session) return;
+  const files = event.clipboardData && event.clipboardData.files;
+  if (!files || files.length === 0) return;
+  event.preventDefault();
+  offerFiles(files);
+  note(`已从剪贴板分享 ${files.length} 个文件；在远端按 Ctrl+V 即可粘贴。`);
+});
+
 el.clearOffer.addEventListener('click', () => {
   state.offered.clear();
   send({ type: 'files.clear' });

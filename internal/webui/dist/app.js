@@ -61,6 +61,11 @@ const state = {
   session: null, // { id, name, width, height }
   socket: null,
   clipboard: [],
+  // localClipboard is what the local clipboard last held, and remoteClipboard
+  // is what the remote last sent, so the one is not pushed back as though the
+  // operator had copied it.
+  localClipboard: '',
+  remoteClipboard: '',
   frameCount: 0,
 
   // Files the operator offered, by name, so a range request can be answered.
@@ -421,6 +426,7 @@ function openSocket(id, reconnecting) {
     renderDisconnectButton();
     el.sendClipboard.disabled = false;
     el.requestClipboard.disabled = false;
+    startClipboardWatch();
     el.resolution.disabled = false;
     el.offerFiles.disabled = false;
     el.clearOffer.disabled = false;
@@ -551,6 +557,7 @@ function endSession() {
   renderDisconnectButton();
   el.sendClipboard.disabled = true;
   el.requestClipboard.disabled = true;
+  stopClipboardWatch();
   el.resolution.disabled = true;
   el.offerFiles.disabled = true;
   el.clearOffer.disabled = true;
@@ -655,6 +662,9 @@ function handleControl(message) {
     }
 
     case 'clipboard.text':
+      // Remembered so the automatic push does not send the remote's own text
+      // straight back to it.
+      state.remoteClipboard = message.text;
       addClipboard(message.text, message.ts);
       break;
 
@@ -1148,6 +1158,17 @@ window.addEventListener('blur', () => {
   releaseHeldKeys();
 });
 
+window.addEventListener('focus', () => {
+  pushLocalClipboard();
+});
+
+// A clipboard read is only allowed while the page is focused, so the moment it
+// becomes visible again is the first chance to see what changed while it was
+// hidden.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pushLocalClipboard();
+});
+
 // The page going away is the other way a held button is never released.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
@@ -1387,6 +1408,50 @@ el.sendClipboard.addEventListener('click', () => {
   send({ type: 'clipboard.set', text });
   el.clipboardOut.value = '';
 });
+
+// The local clipboard reaches the remote on its own. The remote's does not
+// reach the local one, which stays a decision the operator makes by clicking an
+// entry: a busy remote overwriting what is being copied locally is the thing
+// that makes shared clipboards unusable.
+//
+// Reading the local clipboard needs the page to be focused, so this runs on
+// focus and on a slow timer rather than on a clipboard event, which browsers do
+// not fire for a page that is not focused anyway.
+const CLIPBOARD_POLL = 1500;
+let clipboardTimer = null;
+let clipboardDenied = false;
+
+async function pushLocalClipboard() {
+  if (!state.session || clipboardDenied) return;
+  if (typeof navigator.clipboard?.readText !== 'function') return;
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    // Refused, or the page is not focused. Both are ordinary, and asking again
+    // every 1.5 seconds would fill the console with the same refusal.
+    clipboardDenied = true;
+    return;
+  }
+  if (!text || text === state.localClipboard) return;
+  state.localClipboard = text;
+  // The remote sent this one, so sending it back would have the two sides
+  // copying each other's text into a loop.
+  if (text === state.remoteClipboard) return;
+  send({ type: 'clipboard.set', text });
+}
+
+function startClipboardWatch() {
+  if (clipboardTimer !== null) return;
+  clipboardTimer = setInterval(pushLocalClipboard, CLIPBOARD_POLL);
+  pushLocalClipboard();
+}
+
+function stopClipboardWatch() {
+  if (clipboardTimer === null) return;
+  clearInterval(clipboardTimer);
+  clipboardTimer = null;
+}
 
 el.requestClipboard.addEventListener('click', () => {
   send({ type: 'clipboard.request' });

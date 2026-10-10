@@ -64,6 +64,9 @@ const state = {
   // localClipboard is what the local clipboard last held, and remoteClipboard
   // is what the remote last sent, so the one is not pushed back as though the
   // operator had copied it.
+  // unauthorized records that the console's cookie was refused, so the page
+  // stops retrying and stays on the logon form.
+  unauthorized: false,
   localClipboard: '',
   remoteClipboard: '',
   frameCount: 0,
@@ -182,6 +185,12 @@ async function api(path, options = {}) {
     error.code = (body && body.code) || 'http_error';
     error.status = response.status;
     error.body = body || {};
+    // The console's own cookie has expired. Nothing on this page can fix that,
+    // and the way the rest of this file reports failures would call it a network
+    // problem and keep retrying a session that cannot come back. A failed logon
+    // is the one 401 that must not land here, or the page would stand in its own
+    // way while showing the message that explains the refusal.
+    if (response.status === 401 && path !== '/api/login') onAuthExpired();
     throw error;
   }
   return body || {};
@@ -471,12 +480,40 @@ function openSocket(id, reconnecting) {
       endSession();
       return;
     }
+    // A refused WebSocket upgrade arrives as an abnormal close with nothing
+    // said about why, so the reason is asked for once here. An expired cookie
+    // answers 401 and the page goes back to the logon form; anything else
+    // answers normally and reconnecting carries on as before.
+    api('/api/sessions').catch(() => {});
     scheduleReconnect();
   });
 
   socket.addEventListener('error', () => {
     noteError('socket_error', 'WebSocket 出错，连接可能已断开。');
   });
+}
+
+// onAuthExpired returns the page to the logon form.
+//
+// It is deliberately final: the session is dropped rather than retried, because
+// every retry would be refused the same way. Without this the page sat on a
+// canvas that would never update again, and said so as though the network were
+// at fault.
+function onAuthExpired() {
+  if (state.unauthorized) return;
+  state.unauthorized = true;
+  state.sessionEnded = true; // stop the reconnect loop
+  cancelReconnect();
+  if (state.socket) {
+    try { state.socket.close(); } catch { /* already gone */ }
+    state.socket = null;
+  }
+  if (state.session) {
+    state.session = null;
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* private mode */ }
+  }
+  el.loginStatus.textContent = '控制台登录已过期，请重新输入口令。';
+  showLogin();
 }
 
 // scheduleReconnect retries the same session with a growing delay. It stops once
@@ -1471,6 +1508,7 @@ el.loginForm.addEventListener('submit', async (event) => {
   el.loginStatus.textContent = '验证中…';
   try {
     await api('/api/login', { method: 'POST', body: JSON.stringify({ password: el.password.value }) });
+    state.unauthorized = false;
     el.password.value = '';
     el.loginStatus.textContent = '';
     showWorkspace();

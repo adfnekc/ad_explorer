@@ -2299,3 +2299,37 @@ func TestWireFailureWhileAttachedDetachesRatherThanEndingTheSession(t *testing.T
 		t.Fatal("a write failure ended the session instead of detaching it")
 	}
 }
+
+func TestFrameThatFailsToSendAsksForTheWholeDesktop(t *testing.T) {
+	// The accumulator is cleared before the frame is known to have gone out, and
+	// the source only reports a region when it changes. A region that is
+	// forgotten without being delivered is therefore never sent again: the
+	// client keeps showing whatever happened to be there, which looks like a
+	// block of an old window left behind and lasts until the page is reloaded.
+	//
+	// Asserted here rather than in a real session, because a real session shows
+	// it only sometimes and only after a drag.
+	src := newFakeSource(64, 64)
+	s, _, _ := attachedReconnectSession(t, time.Minute, src)
+
+	s.mu.Lock()
+	tr := s.transport
+	s.mu.Unlock()
+	tr.(*fakeTransport).setSendErr(errors.New("broken pipe"))
+
+	bounds := s.acc.Bounds()
+	s.acc.Add(image.Rect(bounds.Min.X+8, bounds.Min.Y+8, bounds.Min.X+24, bounds.Min.Y+24))
+	if s.acc.Empty() {
+		t.Fatal("the region did not accumulate, so this proves nothing")
+	}
+
+	img := image.NewRGBA(bounds)
+	if s.render(Update{Image: img}) {
+		t.Fatal("render reported the session as healthy after a failed write")
+	}
+
+	rects, full := s.acc.Result()
+	if !full {
+		t.Fatalf("the accumulator asks for %d regions after a failed write, want the whole desktop", len(rects))
+	}
+}

@@ -24,17 +24,12 @@ const (
 	maxRangePerRequest = 1 << 20
 	// downloadChunk is how much of a remote file is read and sent in one go.
 	//
-	// It is much larger than a comfortable message because the protocol answers
-	// one range per request, so a transfer spends one round trip per chunk and
-	// its speed is this number over that latency. Measured against a real
-	// target, a 64 KiB chunk costs 5.9 ms and delivers 10.5 MB/s, which is the
-	// arithmetic and nothing else; four megabytes pays the same round trip four
-	// hundred times less often. The ceiling above this is the frame limit (32
-	// MiB) and the library's own single read limit (16 MiB).
-	//
-	// The cost is memory: one buffer this size per transfer, at each end, and
-	// progress that moves in larger steps.
-	downloadChunk = 4 << 20
+	// Larger is not faster, which was measured rather than assumed. On a target a
+	// millisecond away a 64 KiB chunk took 5.9 ms, of which under one millisecond
+	// was latency, so about 13 MB/s was being spent moving the bytes rather than
+	// waiting for them; four megabytes made each round trip four times longer for
+	// the same bytes. That is what a bandwidth limit looks like, and it means this
+	// number is a memory and progress setting rather than a speed one.
 	// maxConcurrentDownloads bounds how many files a client may pull at once,
 	// so a misbehaving one cannot open an unbounded number of remote reads.
 	maxConcurrentDownloads = 4

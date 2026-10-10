@@ -10,6 +10,8 @@ github.com/adfnekc/grdp v0.8.5-0.20261009062140-c4137bbd983a h1:N9MOW9DlSxKxuZF0
 github.com/adfnekc/grdp v0.8.5-0.20261009062140-c4137bbd983a/go.mod h1:bMD8fvGf0XDAmGFO3dSkvKBCIOngnhBfXqy3nP30rpE=
 github.com/adfnekc/grdp v0.8.6-0.20261010074854-2000e7694e4d h1:NLink2IeFQIv6OCCO1GwULfe8Gj7BPH0392Zg13VwDM=
 github.com/adfnekc/grdp v0.8.6-0.20261010074854-2000e7694e4d/go.mod h1:bMD8fvGf0XDAmGFO3dSkvKBCIOngnhBfXqy3nP30rpE=
+github.com/adfnekc/grdp v0.8.6-0.20261010090221-f9f62edce731 h1:SvNRrnH1WWQ2tQIWExUrVfH8f3OUUq3LQi2zHXZVEPw=
+github.com/adfnekc/grdp v0.8.6-0.20261010090221-f9f62edce731/go.mod h1:bMD8fvGf0XDAmGFO3dSkvKBCIOngnhBfXqy3nP30rpE=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/huin/asn1ber v0.0.0-20120622192748-af09f62e6358 h1:hVXNJ57IHkOA8FBq80UG263MEBwNUMfS9c82J2QE5UQ=

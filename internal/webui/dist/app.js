@@ -770,7 +770,10 @@ function handleFrame(buffer) {
   if (buffer.byteLength >= HEADER_LEN && new DataView(buffer).getUint8(0) === TYPE_IMAGE) {
     const seq = new DataView(buffer).getUint32(12, true);
     if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
-      state.seqGaps++;
+      // The size of the jump, not one per jump: a run of frames that never
+      // arrived is one discontinuity but many lost frames, and reporting it as
+      // one would understate the damage by however long the run was.
+      state.seqGaps += seq - state.lastSeq - 1;
       // Asking for the whole desktop is the only way back to pixels the server
       // believes the client already holds.
       send({ type: 'session.repaint' });
@@ -875,7 +878,7 @@ function renderInputTelemetry() {
     (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
     (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`) +
     ` · 帧 ${state.framesDrawn}` +
-    (state.seqGaps ? ` · 缺口 ${state.seqGaps}` : '');
+    (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }
 
 // ---------------------------------------------------------------- files

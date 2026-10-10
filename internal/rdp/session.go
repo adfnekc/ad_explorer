@@ -698,7 +698,7 @@ func (s *Session) OnCursor(f func(Cursor)) error {
 			return
 		}
 		f(Cursor{
-			Image:      alphaShape(cur),
+			Image:      cur.Image,
 			Hotspot:    cur.Hotspot,
 			System:     cur.System,
 			SystemType: cur.SystemType,
@@ -708,45 +708,6 @@ func (s *Session) OnCursor(f func(Cursor)) error {
 		})
 	})
 	return nil
-}
-
-// alphaShape returns the pointer as the server drew it.
-//
-// A 32bpp shape states what it is in its alpha channel, and the library applies
-// the two colour AND mask rule to it anyway. That rule says an AND bit of one
-// over a white pixel means "the inverse of whatever is behind", which is not
-// knowable from a shape, so it substitutes a black and white checkerboard. On
-// Windows 10 the arrow and the I beam are both 32bpp with an opaque white body,
-// so almost the whole pointer arrives as that checkerboard.
-//
-// The masks the shape was decoded from travel with it, so the shape is decoded
-// again here using its alpha and the AND mask is left alone. This is a
-// workaround for a library bug and it comes out when the library stops
-// substituting the pattern.
-func alphaShape(cur *client.Cursor) *image.RGBA {
-	if cur == nil || cur.Image == nil || cur.XorBpp != 4 {
-		return cur.Image
-	}
-	w, h := cur.Image.Bounds().Dx(), cur.Image.Bounds().Dy()
-	row := pdu.PointerXorRowBytes(w, 4)
-	if row <= 0 || len(cur.Xor) < row*h {
-		return cur.Image
-	}
-	out := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		// A colour pointer's rows are stored bottom up.
-		xo := (h - 1 - y) * row
-		for x := 0; x < w; x++ {
-			i := xo + x*4
-			o := y*out.Stride + x*4
-			// The bytes are blue, green, red, alpha.
-			out.Pix[o+0] = cur.Xor[i+2]
-			out.Pix[o+1] = cur.Xor[i+1]
-			out.Pix[o+2] = cur.Xor[i+0]
-			out.Pix[o+3] = cur.Xor[i+3]
-		}
-	}
-	return out
 }
 
 // OnCursorPos subscribes to the server's pointer position, in desktop pixels.

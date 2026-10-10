@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -761,6 +762,25 @@ func TestRemoteFileThroughput(t *testing.T) {
 	}
 	if target == nil {
 		t.Skipf("none of the offered files is the one asked for")
+	}
+
+	// A CPU profile of this process is a profile of the whole path: the transfer
+	// is read here, so grdp's clipboard channel, the TLS layer and every copy
+	// between them are all in this binary. A gateway that is idle while a
+	// transfer crawls means the time is spent somewhere else entirely.
+	if path := os.Getenv("ADX_TEST_CPUPROFILE"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("profile: %v", err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			t.Fatalf("profile: %v", err)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			f.Close()
+			t.Logf("profile written to %s", path)
+		}()
 	}
 
 	// Ranges are read as fast as the protocol answers them, which is the number

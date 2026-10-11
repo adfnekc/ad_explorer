@@ -144,6 +144,20 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 	if len(work) == 0 {
 		return nil, nil
 	}
+
+	// A large region is one encode and cannot be spread out, so it is divided
+	// before anything is encoded. The strips are regions like any other and the
+	// client draws them in the order they arrive, which is what makes the split
+	// invisible in the result — the same pixels, drawn by halves rather than at
+	// once. This is where a 1080p frame gets its parallel work from: as one
+	// rectangle it is 58 ms, which is nearly four frame intervals.
+	//
+	// Only when there is nothing else to encode. When a frame already has many
+	// regions there is work enough to spread out, and cutting them up as well
+	// would produce more, smaller messages for no more parallelism.
+	if len(work) == 1 {
+		work = splitForParallelism(work[0], bounds)
+	}
 	first := b.seq + 1
 	b.seq += uint32(len(work))
 
@@ -157,7 +171,13 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 			return wsframe.Frame{}, err
 		}
 		var flags uint16
-		if full {
+		// The flag is on the first frame of the batch and nowhere else. It says
+		// a whole desktop is on its way, which is what the client clears its
+		// queue for — and clearing is not additive, so a second frame carrying it
+		// would throw away the strips of the same desktop that had not been drawn
+		// yet. They are not lost from the picture: the next full frame brings
+		// them back, one frame interval later, which is late enough to be seen.
+		if full && i == 0 {
 			flags |= wsframe.FlagFull
 		}
 		if first+uint32(i) == 1 {
@@ -220,6 +240,55 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 		}
 	}
 	return frames, nil
+}
+
+// stripArea is the area above which a region is worth dividing. It is a little
+// under half of a 1080p desktop, so a window being dragged across the screen is
+// split and a dialog is not: dividing a small region costs a goroutine and a
+// message for each piece and saves an amount of time too small to measure.
+const stripArea = 900 * 500
+
+// stripRows is the shortest strip worth making. A strip is an encoded message
+// with a header and a rectangle of its own, so very thin ones cost more in
+// framing than they save in time, and PNG has less to work with in a short run
+// of rows than in a tall one.
+const stripRows = 32
+
+// splitForParallelism divides a large region into horizontal strips so that the
+// encoder has more than one piece of work to run at once. It returns the region
+// untouched when it is small enough that dividing it would not pay.
+func splitForParallelism(r image.Rectangle, desktop image.Rectangle) []image.Rectangle {
+	height := r.Dy()
+	if height <= stripRows*2 || r.Dx()*height < stripArea {
+		return []image.Rectangle{r}
+	}
+	// No more strips than the machine can run at once, and no fewer than two,
+	// and never thin enough to fall under stripRows. Dividing into more pieces
+	// than there are processors does not finish sooner: what is left over waits
+	// for a processor just as it would have waited for the one goroutine.
+	pieces := runtime.GOMAXPROCS(0)
+	if pieces > height/stripRows {
+		pieces = height / stripRows
+	}
+	if pieces < 2 {
+		return []image.Rectangle{r}
+	}
+	// Rounded up, so every strip is at least stripRows tall and the last one
+	// takes the remainder rather than being a sliver.
+	rows := (height + pieces - 1) / pieces
+	if rows < stripRows {
+		rows = stripRows
+	}
+
+	strips := make([]image.Rectangle, 0, pieces+1)
+	for y := r.Min.Y; y < r.Max.Y; y += rows {
+		end := y + rows
+		if end > r.Max.Y {
+			end = r.Max.Y
+		}
+		strips = append(strips, image.Rect(r.Min.X, y, r.Max.X, end).Intersect(desktop))
+	}
+	return strips
 }
 
 // crop returns the part of src covering r.

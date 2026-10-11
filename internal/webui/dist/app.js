@@ -911,11 +911,13 @@ async function drawFrame(buffer) {
     return;
   }
 
-  if (flags & 0x0001) {
-    ctx.drawImage(bitmap, 0, 0);
-  } else {
-    ctx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
-  }
+  // Drawn where the header says, always. A whole desktop used to be drawn at
+  // (0, 0) and at its own size, which is the same thing when the rectangle is
+  // the whole desktop — and is not the same thing at all when a large frame has
+  // been divided into strips to be encoded at once. The flag above still means a
+  // whole desktop is on its way, which is what the queue is cleared for; it no
+  // longer decides where a piece of one is drawn.
+  ctx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
   bitmap.close();
 
   state.frameCount++;

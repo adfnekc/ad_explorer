@@ -197,26 +197,183 @@ const el = {
 // The desktop is composed in a buffer the screen never shows, and presented in
 // one go.
 //
-// This is what makes a refresh atomic. A remote desktop arrives as many
-// rectangles over many ticks — and a large one is now sent as several strips —
-// so drawing each onto the visible canvas as it arrives shows half of one
-// desktop beside half of the last. That is the tearing: not the display scanning
-// out mid-draw, but the client painting pieces of two different desktops in the
-// same instant. Composing them into a buffer and presenting on the display's own
-// cadence means the screen only ever shows complete states, however many pieces
-// went into the one it is showing.
-const back = document.createElement('canvas');
-const ctx = back.getContext('2d', { alpha: false });
-ctx.imageSmoothingEnabled = false;
-const presentCtx = el.screen.getContext('2d', { alpha: false });
-presentCtx.imageSmoothingEnabled = false;
+// The desktop is composed on the GPU and shown in one operation.
+//
+// Two things have to be true for a remote desktop not to look torn, and only the
+// second is about speed. The first is that a redraw is composed where the screen
+// cannot see it: updates arrive as many rectangles over many ticks, so drawing
+// them onto the visible surface as they arrive shows pieces of two different
+// desktops in the same instant. The second is that showing it is one operation
+// the display can take whole, and a 2D canvas turned out not to be enough for
+// that one: a large drawImage is handed over as a texture upload that can land
+// part way through the display's own refresh, so the screen shows the upload
+// rather than the picture. Drawing one textured quad is one GPU operation with
+// nothing in it that can land part way.
+//
+// It is also where the speed is. Composing a region becomes a texture upload and
+// a quad instead of a CPU copy, which is the part a hardware path exists for.
+//
+// desynchronized is deliberately off. It is the option for lower latency by
+// bypassing the compositor, which is the thing being relied on here to decide
+// when a frame is shown — taking it away would reintroduce exactly the fault.
+const GL_OPTIONS = {
+  alpha: false, antialias: false, depth: false, stencil: false,
+  preserveDrawingBuffer: false, desynchronized: false, powerPreference: 'high-performance',
+};
+
+const VS = `
+attribute vec2 aPos;
+attribute vec2 aTex;
+varying vec2 vTex;
+void main() {
+  vTex = aTex;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FS = `
+precision mediump float;
+varying vec2 vTex;
+uniform sampler2D uTex;
+void main() {
+  gl_FragColor = texture2D(uTex, vTex);
+}`;
+
+// glApi is null when the browser has no WebGL, and the 2D path below is used
+// instead. A gateway that shows a torn picture is better than one that shows
+// none, so this is a fallback and not a refusal.
+let glApi = null;
+
+function buildGL() {
+  const gl = el.screen.getContext('webgl', GL_OPTIONS)
+    || el.screen.getContext('experimental-webgl', GL_OPTIONS);
+  if (!gl) return null;
+
+  const compile = (type, source) => {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, source);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      return null;
+    }
+    return sh;
+  };
+  const vs = compile(gl.VERTEX_SHADER, VS);
+  const fs = compile(gl.FRAGMENT_SHADER, FS);
+  if (!vs || !fs) return null;
+
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    return null;
+  }
+  gl.useProgram(program);
+
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  // Two triangles as x, y, u, v. The geometry is replaced per draw; only the
+  // buffer exists here, so that a draw never allocates.
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(24), gl.DYNAMIC_DRAW);
+
+  const aPos = gl.getAttribLocation(program, 'aPos');
+  const aTex = gl.getAttribLocation(program, 'aTex');
+  gl.enableVertexAttribArray(aPos);
+  gl.enableVertexAttribArray(aTex);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 16, 8);
+
+  // The composed desktop lives in this texture and is what gets shown. It is the
+  // only surface the screen is ever given, so it is the only thing that has to
+  // be whole.
+  const desktopTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, desktopTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, desktopTex, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    return null;
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // A region is uploaded here before it is drawn into the desktop, so the upload
+  // target does not change size and does not have to be reallocated per frame.
+  const regionTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, regionTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  return { gl, program, quad, desktopTex, regionTex, fbo, width: 0, height: 0 };
+}
+
+// drawQuad fills the attribute buffer with one rectangle and draws it.
+//
+// x, y, w, h are in desktop pixels with the origin at the top left, which is how
+// the wire describes a region; the shader is given clip space, which has the
+// origin at the bottom left. The texture is uploaded already flipped, so the
+// vertical flip happens once here in the geometry rather than in the image.
+function drawQuad(g, x, y, w, h, texW, texH) {
+  const { gl, width, height } = g;
+  const x0 = (x / width) * 2 - 1;
+  const x1 = ((x + w) / width) * 2 - 1;
+  const y1 = 1 - (y / height) * 2;
+  const y0 = 1 - ((y + h) / height) * 2;
+  const u1 = w / texW;
+  const v1 = h / texH;
+  const verts = new Float32Array([
+    x0, y0, 0, 0,
+    x1, y0, u1, 0,
+    x0, y1, 0, v1,
+    x0, y1, 0, v1,
+    x1, y0, u1, 0,
+    x1, y1, u1, v1,
+  ]);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, verts);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+// A way out if the hardware path misbehaves on a particular machine. The
+// fallback below is already what happens when WebGL is missing; this is for when
+// it is there and wrong, which is a case no amount of checking here can rule
+// out and which the operator would otherwise have no way past.
+const forcedSoftware = new URLSearchParams(location.search).get('compositor') === 'canvas2d';
+glApi = forcedSoftware ? null : buildGL();
+
+// Which compositor is in use is a fact worth being able to look up. A browser
+// without WebGL is shown the 2D path rather than nothing, so "it looks torn"
+// and "it is on the software path" are two different answers to the same
+// question, and this says which one is in play.
+el.screen.dataset.compositor = glApi ? 'webgl' : 'canvas2d';
+
+// The 2D fallback, used only when WebGL is not there at all.
+const ctx2d = document.createElement('canvas');
+const fallbackCtx = ctx2d.getContext('2d', { alpha: false });
+const fallbackPresent = glApi ? null : el.screen.getContext('2d', { alpha: false });
+if (fallbackPresent) fallbackPresent.imageSmoothingEnabled = false;
 
 let lastPresentAt = 0;
 
 function present() {
   lastPresentAt = performance.now();
   state.presents++;
-  presentCtx.drawImage(back, 0, 0);
+  if (glApi) {
+    const { gl, desktopTex, width, height } = glApi;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, width, height);
+    gl.bindTexture(gl.TEXTURE_2D, desktopTex);
+    // The composed desktop is already the whole screen, so it is drawn from its
+    // own texture to the default one and nothing else happens.
+    drawQuad(glApi, 0, 0, width, height, width, height);
+    return;
+  }
+  fallbackPresent.drawImage(ctx2d, 0, 0);
 }
 
 // A safety net and not the mechanism. The buffer is shown when a batch ends, so
@@ -235,17 +392,65 @@ function presentIfStale() {
 
 setInterval(presentIfStale, PRESENT_STALE_MS);
 
-// Both buffers are sized together because setting a canvas's size clears it, and
-// a buffer cleared on its own would present as a blank desktop.
+// compose draws one region into the composed desktop.
+//
+// The region is placed where its header says, which is also where the client of
+// a 2D canvas would have put it: nothing about the layout changes, only where
+// the pixels are put together.
+function compose(bitmap, x, y, w, h) {
+  if (!glApi) {
+    fallbackCtx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
+    return;
+  }
+  const { gl, regionTex, desktopTex, fbo } = glApi;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, glApi.width, glApi.height);
+  gl.bindBuffer(gl.ARRAY_BUFFER, glApi.quad);
+  gl.bindTexture(gl.TEXTURE_2D, regionTex);
+  // Flipped on upload so that the image's top row is the top of the texture,
+  // which is what makes the single flip in drawQuad enough.
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  const tw = bitmap.width || w;
+  const th = bitmap.height || h;
+  drawQuad(glApi, x, y, w || tw, h || th, tw, th);
+  gl.bindTexture(gl.TEXTURE_2D, desktopTex);
+}
+
+// sizeDesktop makes both surfaces the size of the desktop and fills the composed
+// one, because a resized surface is a cleared one and a cleared desktop would be
+// shown as a blank screen.
 function sizeDesktop(width, height, fill) {
-  back.width = width;
-  back.height = height;
   el.screen.width = width;
   el.screen.height = height;
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = fill;
-  ctx.fillRect(0, 0, width, height);
-  presentCtx.drawImage(back, 0, 0);
+  const rgb = hexColour(fill);
+  if (glApi) {
+    const { gl, desktopTex, fbo } = glApi;
+    glApi.width = width;
+    glApi.height = height;
+    gl.bindTexture(gl.TEXTURE_2D, desktopTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, width, height);
+    gl.clearColor(rgb[0], rgb[1], rgb[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    present();
+    return;
+  }
+  ctx2d.width = width;
+  ctx2d.height = height;
+  fallbackCtx.imageSmoothingEnabled = false;
+  fallbackCtx.fillStyle = fill;
+  fallbackCtx.fillRect(0, 0, width, height);
+  fallbackPresent.drawImage(ctx2d, 0, 0);
+}
+
+// hexColour turns #rrggbb into the three components gl.clearColor wants.
+function hexColour(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255];
 }
 
 // ---------------------------------------------------------------- transport
@@ -979,7 +1184,7 @@ async function drawFrame(buffer) {
   // been divided into strips to be encoded at once. The flag above still means a
   // whole desktop is on its way, which is what the queue is cleared for; it no
   // longer decides where a piece of one is drawn.
-  ctx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
+  compose(bitmap, x, y, w, h);
   // Presented when the batch is whole, and not before. Presenting on the
   // display's next refresh instead means showing the buffer at whatever moment
   // the display happens to choose, which can be half way through composing the
@@ -1014,7 +1219,13 @@ async function drawFrame(buffer) {
   state.frameCount++;
   if (state.frameCount === 1) {
     el.capability.textContent = '';
-    note('收到第一帧画面。');
+    // Which compositor is in use is said with the first frame rather than at
+    // load, because the answer decides where to look next: a torn picture on the
+    // software path and a torn picture on the hardware one are not the same
+    // fault, and there is no other way to tell them apart from outside the page.
+    note(glApi
+      ? '收到第一帧画面；合成走 WebGL。'
+      : '收到第一帧画面；合成走 2D 画布，这个浏览器没有可用的 WebGL。');
   }
 }
 

@@ -447,44 +447,21 @@ func (ft *fileTransfer) stream(index uint32, transferID uint32) {
 	})
 
 	var sent int64
-	// The wait for the remote and the write to the client are independent, and on
-	// a link that is fast both ways the wait is most of the time a chunk takes.
-	// Asking for the next chunk before sending the current one overlaps them: the
-	// server fills its buffer while the client drains ours. The channel is
-	// buffered so a reader left over from a loop that ended early finishes and
-	// exits instead of holding the transfer open.
-	type chunkResult struct {
-		data []byte
-		err  error
-	}
-	pending := make(chan chunkResult, 1)
-	request := func(off int64) {
-		want := downloadChunk
-		if entry.Size > 0 && entry.Size-off < int64(want) {
-			want = int(entry.Size - off)
-		}
-		go func() {
-			data, err := ft.files.ReadRemoteFile(index, off, want)
-			pending <- chunkResult{data, err}
-		}()
-	}
-	request(0)
-
 	for entry.Size == 0 || sent < entry.Size {
-		got := <-pending
-		if got.err != nil {
-			_ = ft.emit(wsframe.FilesEnd{TransferID: transferID, Error: got.err.Error()})
+		want := downloadChunk
+		if entry.Size > 0 && entry.Size-sent < int64(want) {
+			want = int(entry.Size - sent)
+		}
+		chunk, err := ft.files.ReadRemoteFile(index, sent, want)
+		if err != nil {
+			_ = ft.emit(wsframe.FilesEnd{TransferID: transferID, Error: err.Error()})
 			return
 		}
-		if len(got.data) == 0 {
+		if len(chunk) == 0 {
 			break // the file ended earlier than its manifest said
 		}
 
-		if entry.Size == 0 || sent+int64(len(got.data)) < entry.Size {
-			request(sent + int64(len(got.data)))
-		}
-
-		frame, err := wsframe.FileChunkFrame(transferID, uint32(sent), got.data)
+		frame, err := wsframe.FileChunkFrame(transferID, uint32(sent), chunk)
 		if err != nil {
 			_ = ft.emit(wsframe.FilesEnd{TransferID: transferID, Error: err.Error()})
 			return
@@ -493,7 +470,7 @@ func (ft *fileTransfer) stream(index uint32, transferID uint32) {
 			// The client is gone; the session will notice on its own.
 			return
 		}
-		sent += int64(len(got.data))
+		sent += int64(len(chunk))
 	}
 
 	_ = ft.emit(wsframe.FilesEnd{TransferID: transferID})

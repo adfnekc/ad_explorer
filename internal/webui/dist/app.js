@@ -427,9 +427,11 @@ const fallbackPresent = glApi ? null : el.screen.getContext('2d', { alpha: false
 if (fallbackPresent) fallbackPresent.imageSmoothingEnabled = false;
 
 let lastPresentAt = 0;
+let presentPending = false;
 
 function present() {
   lastPresentAt = performance.now();
+  presentPending = false;
   state.presents++;
   if (glApi) {
     const { gl, desktopTex, width, height } = glApi;
@@ -442,6 +444,26 @@ function present() {
     return;
   }
   fallbackPresent.drawImage(ctx2d, 0, 0);
+}
+
+// A complete redraw is ready. It is shown on the display's next refresh rather
+// than straight away, and at most once for that refresh.
+//
+// This is the difference between a screen that shows whole desktops and one that
+// shows two of them a fraction of a frame apart. Redraws arrive in bursts — the
+// measured smallest gap between two is 0.4 ms — so showing each one as it was
+// finished asked the display to present the first and then the second within a
+// single refresh, and it can only show one. Coalescing them means the display
+// shows the newest complete desktop once, and never a desktop followed by its
+// own replacement before anything could see it.
+//
+// What it is not is showing the buffer whenever the display happens to refresh:
+// this is only asked for when a batch is whole, so the thing being shown is
+// always a finished composition and never a half-made one.
+function schedulePresent() {
+  if (presentPending) return;
+  presentPending = true;
+  requestAnimationFrame(present);
 }
 
 // A safety net and not the mechanism. The buffer is shown when a batch ends, so
@@ -1159,7 +1181,13 @@ function handleFrame(buffer) {
   // token in that field — so anything else must not be counted at all.
   if (buffer.byteLength >= HEADER_LEN && new DataView(buffer).getUint8(0) === TYPE_IMAGE) {
     const seq = new DataView(buffer).getUint32(12, true);
-    if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
+    // A sequence that goes backwards is the numbering starting again — a new
+    // encoder after a reconnect — and not a gap. Counting it as one drove the
+    // figure below zero, which is how a number that only ever grows came back
+    // negative and made the whole line look untrustworthy.
+    if (state.lastSeq !== null && seq < state.lastSeq) {
+      state.lastSeq = seq;
+    } else if (state.lastSeq !== null && seq !== state.lastSeq + 1) {
       // The size of the jump, not one per jump: a run of frames that never
       // arrived is one discontinuity but many lost frames, and reporting it as
       // one would understate the damage by however long the run was.

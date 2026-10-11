@@ -547,11 +547,13 @@ func (s *Session) MouseButton(button int, down bool, x, y int) {
 // MouseWheel turns the wheel at a point. Delta is in notches and positive means
 // away from the user.
 //
-// The wire field counts in units of 120 degrees, so a notch is 120 and not 1.
-// The library clamps to the nine bit field the field actually is, which is two
-// notches, so a larger delta is sent as several messages rather than being
-// silently cut down to two. Messages are sent separately because the field has
-// no room for the total, not because the server needs them one at a time.
+// The library counts rotation units, and one notch is client.WheelDelta of them,
+// so the conversion is here rather than at the call site: everything above this
+// layer deals in notches, which is what a browser wheel event is measured in.
+// The library clamps to the nine bit signed field, which holds two notches, so a
+// larger delta goes as several messages rather than being cut down to two. A
+// scroll that arrives shorter than it should reads as an insensitive wheel, which
+// is harder to place than a wrong one.
 func (s *Session) MouseWheel(delta, x, y int) {
 	if !s.live() {
 		return
@@ -563,23 +565,30 @@ func (s *Session) MouseWheel(delta, x, y int) {
 		} else if step < -maxWheelNotches {
 			step = -maxWheelNotches
 		}
-		s.sink.MouseWheel(step*wheelUnitsPerNotch, x, y)
+		s.sink.MouseWheel(step*client.WheelDelta, x, y)
 		delta -= step
 	}
 }
 
 const (
-	// wheelUnitsPerNotch is 120 degrees, the unit the field is documented in.
-	wheelUnitsPerNotch = 120
+	// WheelDelta is the library's, not a copy of it, so the two cannot drift.
+	// wheelUnitsPerNotch names it here for what this layer needs it to mean.
+	wheelUnitsPerNotch = client.WheelDelta
 	// maxWheelNotches is the largest whole number of notches that fits the nine
-	// bit field, which is what the library clamps to.
-	maxWheelNotches = 2
+	// bit signed field the library clamps to, which is 255 against 120.
+	maxWheelNotches = 255 / client.WheelDelta
 )
 
 // sendPreamble sends the input sequence mstsc sends once the session is ready: a
 // Tab release, the toggle key state, then another Tab release. Both mstsc and
-// FreeRDP send it, and a server that never sees it does not take pointer button
-// input at all, which looks exactly like the mouse being broken.
+// FreeRDP send it, so a session that starts without it is unlike every real
+// client, and this follows them rather than expecting to differ.
+//
+// It is not what makes pointer buttons work here. That was a movement flag the
+// library used to set on button events, and adding this sequence while that flag
+// was still there changed nothing — so the sequence must not be credited for it,
+// and must not be removed expecting buttons to stop. What would stop is nothing
+// observable, which is the reason to keep it rather than a reason to drop it.
 //
 // The toggle state is sent as all-off. Reading the remote's Caps Lock and Num
 // Lock state would mean parsing it back out of the keyboard state the server
@@ -591,13 +600,11 @@ func (s *Session) sendPreamble() {
 		return
 	}
 	if err := p.SendInputPreamble(0); err != nil {
-		// Worth saying, because a server that never gets this sequence does not
-		// take pointer buttons at all, and that looks like a broken mouse rather
-		// than a missing handshake. It does not end the session: typing and
-		// pointer movement still work.
+		// Reported rather than swallowed, because it is the one thing this
+		// sequence is for: a session that is unlike every real client. It does
+		// not end the session, since typing and pointer movement are unaffected.
 		s.emit(ErrorEvent{Code: CodeUnsupported, Err: fmt.Errorf(
-			"the remote did not get the input sequence other clients start with, "+
-				"so pointer buttons may do nothing: %w", err)})
+			"the remote did not get the input sequence other clients start with: %w", err)})
 	}
 }
 

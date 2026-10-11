@@ -111,6 +111,12 @@ const state = {
   lastSeq: null,
   seqGaps: 0,
   framesDrawn: 0,
+  batches: 0,
+  presents: 0,
+  batchGapMs: 0,
+  batchSize: 0,
+  piecesInBatch: 0,
+  lastBatchAt: 0,
   // systemCursor is the last pointer the server named, or null when it sent a
   // shape of its own or has not named one yet.
   systemCursor: null,
@@ -207,6 +213,7 @@ let lastPresentAt = 0;
 
 function present() {
   lastPresentAt = performance.now();
+  state.presents++;
   presentCtx.drawImage(back, 0, 0);
 }
 
@@ -975,7 +982,25 @@ async function drawFrame(buffer) {
   // display's next refresh instead means showing the buffer at whatever moment
   // the display happens to choose, which can be half way through composing the
   // next desktop — and that is what the last of the tearing is.
-  if (flags & FLAG_BATCH_END) present();
+  if (flags & FLAG_BATCH_END) {
+    // Measured rather than assumed: how many messages one redraw takes, and how
+    // long passes between two of them. A gap longer than a display refresh means
+    // the remote itself changed the picture in more than one go, and no client
+    // can make that atomic — which is a different fault from this one and needs
+    // a different answer.
+    const now = performance.now();
+    if (state.batches > 0) {
+      const gap = now - state.lastBatchAt;
+      state.batchGapMs = state.batchGapMs === 0 ? gap : state.batchGapMs * 0.8 + gap * 0.2;
+    }
+    state.lastBatchAt = now;
+    state.batchSize = state.piecesInBatch;
+    state.piecesInBatch = 0;
+    state.batches++;
+    present();
+  } else {
+    state.piecesInBatch++;
+  }
   bitmap.close();
 
   state.frameCount++;
@@ -1001,6 +1026,8 @@ function renderInputTelemetry() {
     (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
     (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`) +
     ` · 帧 ${state.framesDrawn}` +
+    ` · 批 ${state.batches}/${state.batchSize}片 · 呈现 ${state.presents}` +
+    (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms` : '') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }
 

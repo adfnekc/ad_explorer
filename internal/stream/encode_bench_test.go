@@ -112,3 +112,30 @@ func BenchmarkFrameHeader(b *testing.B) {
 
 // Frame is a local alias so the benchmark reads clearly.
 type Frame = wsframe.Frame
+
+// The encoders side by side, reporting size as well as time. The trade between
+// them is sharper against smaller, and which way it falls is a property of what
+// is on the screen rather than of the encoders.
+func benchEncoder(b *testing.B, enc ImageEncoder, img image.Image, quality int) {
+	b.Helper()
+	b.ReportAllocs()
+	var size int
+	for i := 0; i < b.N; i++ {
+		out, _, err := enc.Encode(nil, img, quality)
+		if err != nil {
+			b.Fatal(err)
+		}
+		size = len(out)
+	}
+	b.SetBytes(int64(size))
+	b.ReportMetric(float64(size), "encBytes")
+}
+
+func BenchmarkJPEGFullFrameSized(b *testing.B) {
+	benchEncoder(b, JPEG{}, makeDesktop(1280, 720), 85)
+}
+
+func BenchmarkJPEGRegionSized(b *testing.B) {
+	full := makeDesktop(1280, 720)
+	benchEncoder(b, JPEG{}, full.SubImage(image.Rect(200, 150, 600, 400)).(*image.RGBA), 85)
+}

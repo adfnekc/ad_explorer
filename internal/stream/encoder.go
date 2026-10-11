@@ -29,10 +29,9 @@ type ImageEncoder interface {
 
 // JPEG encodes with the standard library.
 //
-// It is the initial choice because it is in the standard library: no cgo, so
-// the gateway stays a single static binary, and no third-party dependency for
-// the one component most likely to be swapped. Compression is worse than WebP
-// at the same quality, which is the trade being made deliberately for now.
+// It stays available because it is the right answer for photographic content,
+// where PNG's losslessness costs far more bytes than the detail is worth. It is
+// no longer the default: see PNG for the measurement that moved it.
 type JPEG struct{}
 
 // Name implements ImageEncoder.
@@ -89,7 +88,7 @@ type Builder struct {
 // NewBuilder returns a builder using enc. A nil encoder gets JPEG.
 func NewBuilder(enc ImageEncoder) *Builder {
 	if enc == nil {
-		enc = JPEG{}
+		enc = PNG{}
 	}
 	return &Builder{enc: enc}
 }

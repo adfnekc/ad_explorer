@@ -276,7 +276,7 @@ func parseFlags(args []string) (options, error) {
 		"how long a session whose browser went away is kept, so a reload or a network "+
 			"blip can attach to the same desktop. Negative ends the session as soon as "+
 			"the browser does")
-	fs.IntVar(&opts.maxFPS, "max-fps", 20,
+	fs.IntVar(&opts.maxFPS, "max-fps", 60,
 		"the most frames a second one session will encode. Encoding is the "+
 			"expensive part of a session, so a server that draws in a burst has its "+
 			"regions merged into fewer frames rather than encoded one per update")

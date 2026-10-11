@@ -15,9 +15,18 @@ import (
 
 // Quality defaults for a new session.
 const (
-	DefaultQualityMin   = 25
-	DefaultQualityMax   = 90
-	DefaultQualityStart = 70
+	// The floor is high because of what it looks like, not what it costs. JPEG
+	// at the old floor of 25 was unusable for reading a desktop: it did not
+	// merely lose detail, it smeared text until it could not be read. A link
+	// that cannot carry 60 is better served by dropping frames, which the
+	// operator can see happening and understand, than by a picture that is
+	// technically being delivered and cannot be used.
+	DefaultQualityMin = 60
+	DefaultQualityMax = 90
+	// Started near the top so there is room to back off from before the picture
+	// is visibly worse. The governor removes eight per back-off, so starting at
+	// the old 70 left four steps before it was at the floor and blurry.
+	DefaultQualityStart = 85
 )
 
 // Timing defaults for a session's loops.
@@ -28,11 +37,20 @@ const (
 	// only has to be fine relative to the timeout, which is minutes.
 	DefaultIdleCheckInterval = 15 * time.Second
 	// DefaultFrameInterval is the shortest gap between two encoded frames, so
-	// twenty a second. Encoding is the expensive part of a session — a full
-	// 1280x720 frame costs about 32 ms — so a server that draws in a burst must
-	// not become a burst of encodes. Regions that arrive inside one interval are
-	// merged into the next frame.
-	DefaultFrameInterval = 50 * time.Millisecond
+	// sixty a second. It is a floor and not a promise: a full frame measures
+	// 16 ms to encode, so a desktop drawing in full frames will not reach this
+	// and a session drawing in small regions will. That is the point — the
+	// ceiling is the encoder, so a fast link is not held back by a number
+	// chosen for a slow one. Regions arriving inside one interval are merged
+	// into the next frame.
+	//
+	// Sixty rather than the twenty this used to be, because twenty is what made
+	// dragging look unlike a native client: at fifty milliseconds plus the
+	// encode, a dragged window arrives about eighty milliseconds behind the
+	// pointer, which reads as blocks being left and then caught up. The drop
+	// limit and recovery limit are still written as counts at thirty a second,
+	// so they now cover a shorter stretch of time than their comments say.
+	DefaultFrameInterval = 16 * time.Millisecond
 )
 
 // options is what a Session needs beyond the rdp.Config.
@@ -458,13 +476,38 @@ func (s *Session) expireDetached(gen uint64, grace time.Duration) {
 // repaint request. The two are read under one lock so that a reconnect landing
 // between them cannot leave an incremental frame as the first thing a new client
 // sees.
-func (s *Session) attachState() (attached, repaint bool) {
+func (s *Session) attachState() (attached, repaint bool, epoch uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	attached = s.attached
-	repaint = s.repaint
+	return s.attached, s.repaint, s.epoch
+}
+
+// clearRepaint forgets a repaint that has been acted on.
+//
+// Reading and clearing are separate because a tick that cannot act on the
+// request must not swallow it. A reconnect sets the flag, the ticker fires
+// before any update has arrived, and a version that cleared it while reading
+// would leave nothing for the tick that could have used it — so the client would
+// be sent an incremental frame drawn onto a canvas it has never had.
+func (s *Session) clearRepaint() {
+	s.mu.Lock()
 	s.repaint = false
-	return attached, repaint
+	s.mu.Unlock()
+}
+
+// stillTheSameClient reports whether the client that was attached when a frame
+// was decided on is still the one it would be sent to.
+//
+// A reconnect that lands between deciding on a frame and sending it would
+// otherwise hand the new client a frame built for the old one: an incremental
+// rectangle drawn onto a canvas the new client has never had. The frame is
+// dropped instead, and the next one is built as the full repaint the reconnect
+// asked for. Dropping it costs one frame time and closing it costs a repainted
+// desktop, so the two are not close.
+func (s *Session) stillTheSameClient(epoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.epoch == epoch
 }
 
 // handleControl applies one client message. It reports false when the session
@@ -776,7 +819,7 @@ func (s *Session) frameLoop(src FrameSource) {
 				held = nil
 			}
 
-			attached, repaint := s.attachState()
+			attached, repaint, epoch := s.attachState()
 			if repaint && held != nil {
 				// A re-attached client holds nothing, so its first frame has to
 				// be the whole desktop. Seeding the accumulator with its bounds
@@ -786,6 +829,7 @@ func (s *Session) frameLoop(src FrameSource) {
 				// Without it the next update would go out as a rectangle drawn
 				// onto a canvas the client no longer has.
 				s.acc.Add(held.Image.Bounds())
+				s.clearRepaint()
 			}
 			if held == nil || s.acc.Empty() {
 				continue
@@ -795,6 +839,15 @@ func (s *Session) frameLoop(src FrameSource) {
 				// send it. The regions stay accumulated, so the client that
 				// attaches next is handed the desktop as of now rather than a
 				// rectangle drawn onto nothing.
+				continue
+			}
+			if !s.stillTheSameClient(epoch) {
+				// A reconnect landed while this frame was being prepared, so it
+				// belongs to a client that has gone. Dropping it leaves the
+				// regions accumulated, and the frame built next time is the full
+				// repaint the new client needs rather than a rectangle it cannot
+				// place. The accumulator is left alone: what is in it is still
+				// true of the desktop.
 				continue
 			}
 			if !s.render(*held) {

@@ -296,9 +296,13 @@ func TestBuilderSequenceNeverRepeats(t *testing.T) {
 	}
 }
 
-func TestNewBuilderDefaultsToJPEG(t *testing.T) {
-	if got := NewBuilder(nil).EncoderName(); got != "jpeg" {
-		t.Errorf("EncoderName() = %q, want jpeg", got)
+// A builder with no encoder gets the lossless one, because a desktop is text and
+// flat colour and JPEG smears both. The test names it rather than checking for
+// any encoder, so changing the default is a decision that has to be written down
+// here as well as made there.
+func TestNewBuilderDefaultsToTheLosslessEncoder(t *testing.T) {
+	if got := NewBuilder(nil).EncoderName(); got != "png" {
+		t.Errorf("EncoderName() = %q, want png", got)
 	}
 }
 

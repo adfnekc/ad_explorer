@@ -24,6 +24,16 @@ const FORMAT_JPEG = 0x02;
 const FORMAT_PNG = 0x03;
 const FORMAT_RAW = 0x04;
 
+// The format byte decides how the bytes are read, so it is a map rather than a
+// comparison with a default. Treating anything that is not one known format as
+// another known format is how a frame decodes into nothing with no error to
+// report: PNG read as JPEG fails here, and did.
+const FORMAT_MIMES = new Map([
+  [FORMAT_WEBP, 'image/webp'],
+  [FORMAT_JPEG, 'image/jpeg'],
+  [FORMAT_PNG, 'image/png'],
+]);
+
 // File transfer. The gateway stores nothing: it asks for a range of an offered
 // file when the remote's paste needs it, and streams a remote file back in
 // chunks. Both directions are routed by the sequence field, so a chunk is never
@@ -880,7 +890,12 @@ async function drawFrame(buffer) {
   renderInputTelemetry();
 
   const payload = new Uint8Array(buffer, HEADER_LEN);
-  const mime = format === FORMAT_WEBP ? 'image/webp' : 'image/jpeg';
+  const mime = FORMAT_MIMES.get(format);
+  if (!mime) {
+    noteError('decode_failed', `画面使用了无法识别的格式 0x${format.toString(16)}。`);
+    send({ type: 'session.repaint' });
+    return;
+  }
 
   let bitmap;
   try {
@@ -1435,6 +1450,9 @@ function renderDisconnectButton() {
   el.disconnect.textContent = live ? '断开' : '连接';
   el.disconnect.classList.toggle('primary', !live);
   el.disconnect.disabled = false;
+  // One place decides whether a session is live, so it is also the one place
+  // that drains the colour out of the picture when it is not.
+  el.screen.classList.toggle('offline', !live);
 }
 
 // connectOffer is what the button does when nothing is connected: the first host

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/jpeg"
+	_ "image/png"
 	"io"
 	"strings"
 	"sync"
@@ -607,12 +607,16 @@ func TestSessionRoutesClipboard(t *testing.T) {
 func TestSessionQualityControlChangesTheGovernor(t *testing.T) {
 	s, _, tr := newTestSession(t, testConfig())
 
-	tr.send(t, wsframe.SessionQuality{Level: 42})
-	waitFor(t, "the quality to change", func() bool { return s.quality.Value() == 42 })
+	// Inside the governor's range: a manual value below the floor is clamped to
+	// it rather than honoured, and that is deliberate, so asking for one here
+	// would test the clamp rather than the routing.
+	const manual = DefaultQualityMin + 10
+	tr.send(t, wsframe.SessionQuality{Level: manual})
+	waitFor(t, "the quality to change", func() bool { return s.quality.Value() == manual })
 
 	// The manual value survives but the governor keeps working around it.
-	if s.quality.Value() != 42 {
-		t.Errorf("quality = %d, want 42", s.quality.Value())
+	if s.quality.Value() != manual {
+		t.Errorf("quality = %d, want %d", s.quality.Value(), manual)
 	}
 }
 
@@ -1289,8 +1293,14 @@ func TestSessionEncodesFramesFromItsSource(t *testing.T) {
 	if first.Type != wsframe.TypeImage {
 		t.Errorf("type = %#x, want an image frame", first.Type)
 	}
-	if first.Format != wsframe.FormatJPEG {
-		t.Errorf("format = %#x, want JPEG from the default encoder", first.Format)
+	// The encoder is a setting rather than a constant, so this says the format
+	// byte names a real image format and that the payload really is one, instead
+	// of naming whichever encoder happens to be the default this month. A format
+	// byte with nothing behind it is the fault worth catching.
+	switch first.Format {
+	case wsframe.FormatPNG, wsframe.FormatJPEG, wsframe.FormatWebP:
+	default:
+		t.Errorf("format = %#x, which is not an image format", first.Format)
 	}
 	if first.Rect != image.Rect(10, 20, 60, 70) {
 		t.Errorf("rect = %v, want the dirty region", first.Rect)
@@ -1299,9 +1309,9 @@ func TestSessionEncodesFramesFromItsSource(t *testing.T) {
 		t.Error("only the first frame of a stream is a keyframe")
 	}
 
-	// The payload has to be a real image: a JPEG begins with FFD8.
-	if len(first.Payload) < 2 || first.Payload[0] != 0xFF || first.Payload[1] != 0xD8 {
-		t.Errorf("payload does not look like a JPEG: % x", first.Payload[:min(8, len(first.Payload))])
+	// And the bytes have to decode, which is what the client will ask of them.
+	if _, _, err := image.Decode(bytes.NewReader(first.Payload)); err != nil {
+		t.Errorf("the payload does not decode as an image: %v", err)
 	}
 }
 
@@ -1946,9 +1956,9 @@ func TestSessionFileTransferIsOptional(t *testing.T) {
 // tell which of two solid frames it is.
 func decodeAverage(t *testing.T, payload []byte) (r, g, b float64) {
 	t.Helper()
-	img, err := jpeg.Decode(bytes.NewReader(payload))
+	img, _, err := image.Decode(bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("the frame is not a JPEG: %v", err)
+		t.Fatalf("the frame is not an image: %v", err)
 	}
 	bounds := img.Bounds()
 	var sr, sg, sb float64

@@ -172,6 +172,13 @@ fieldset {
    rectangle larger than the desktop, and everything that maps a click into
    remote coordinates reads that rectangle. Sizing it from the canvas's own
    dimensions instead means there is nothing to account for. */
+/* The last frame stays on screen after a session ends, drained of colour. It is
+   the same picture, so nothing has to be redrawn or explained, and the loss of
+   colour is what says the session is gone rather than merely idle. */
+#screen.offline {
+  filter: grayscale(1);
+}
+
 #screen {
   display: block;
   width: auto;

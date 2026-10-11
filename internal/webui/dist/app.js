@@ -218,7 +218,14 @@ const el = {
 // when a frame is shown — taking it away would reintroduce exactly the fault.
 const GL_OPTIONS = {
   alpha: false, antialias: false, depth: false, stencil: false,
-  preserveDrawingBuffer: false, desynchronized: false, powerPreference: 'high-performance',
+  // Kept, and it is not a detail. This canvas is drawn when a redraw is complete
+  // rather than on every display frame, and with the buffer unpreserved its
+  // contents are undefined the moment the browser has composited it once. The
+  // browser composites at its own rate, so the composites that fall between two
+  // redraws would show whatever the buffer happened to hold — which is what the
+  // horizontal bands across the desktop were.
+  preserveDrawingBuffer: true,
+  desynchronized: false, powerPreference: 'high-performance',
 };
 
 const VS = `
@@ -331,7 +338,7 @@ function buildGL() {
 // the wire describes a region; the shader is given clip space, which has the
 // origin at the bottom left. The texture is uploaded already flipped, so the
 // vertical flip happens once here in the geometry rather than in the image.
-function drawQuad(g, x, y, w, h, texW, texH) {
+function drawQuad(g, x, y, w, h, texW, texH, flipV) {
   const { gl, width, height } = g;
   // Bound here rather than by the caller, because present() can be the first
   // draw — it is called when the desktop is sized — and a bufferSubData with
@@ -343,13 +350,21 @@ function drawQuad(g, x, y, w, h, texW, texH) {
   const y0 = 1 - ((y + h) / height) * 2;
   const u1 = w / texW;
   const v1 = h / texH;
+  // Which end of the texture is the top of the rectangle. This is decided here,
+  // in geometry, rather than by asking the upload to flip the image: an image
+  // uploaded with UNPACK_FLIP_Y_WEBGL set is flipped by the driver, and drivers
+  // do not agree on whether that applies to an ImageBitmap, which would leave the
+  // picture wrong no matter which way the switch was set and nothing to say why.
+  // Vertices are ours; this is not.
+  const vTop = flipV ? 0 : v1;
+  const vBottom = flipV ? v1 : 0;
   const verts = new Float32Array([
-    x0, y0, 0, 0,
-    x1, y0, u1, 0,
-    x0, y1, 0, v1,
-    x0, y1, 0, v1,
-    x1, y0, u1, 0,
-    x1, y1, u1, v1,
+    x0, y0, 0, vBottom,
+    x1, y0, u1, vBottom,
+    x0, y1, 0, vTop,
+    x0, y1, 0, vTop,
+    x1, y0, u1, vBottom,
+    x1, y1, u1, vTop,
   ]);
   gl.bufferSubData(gl.ARRAY_BUFFER, 0, verts);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -361,14 +376,14 @@ function drawQuad(g, x, y, w, h, texW, texH) {
 // out and which the operator would otherwise have no way past.
 const params = new URLSearchParams(location.search);
 const forcedSoftware = params.get('compositor') === 'canvas2d';
-// A region's pixels go into the composed desktop the right way up only if the
-// upload orientation matches how the quad reads them, and getting that pairing
-// wrong flips every region inside its own rectangle — which on a desktop sent as
-// strips looks like each band separately reversed, with the wallpaper appearing
-// in pieces at the wrong offsets. It cannot be checked on this machine, because
-// no browser here will give a WebGL context at all, so the pairing is a switch
-// rather than a belief: ?flipy=1 is the other one.
-const flipUpload = params.get('flipy') === '1';
+// A region's pixels land the right way up only if the quad reads the texture from
+// the end the image's top row was stored at, and getting that wrong flips every
+// region inside its own rectangle — which on a desktop sent as strips looks like
+// each band separately reversed, with the wallpaper in pieces at the wrong
+// offsets. It cannot be checked on this machine, because no browser here will
+// give a WebGL context at all, so ?flipy=1 asks for the other reading rather than
+// one of them being believed.
+const flipRegion = params.get('flipy') !== '1';
 // The reason a failed setup gives up matters more than that it gave up: "no
 // WebGL here" and "WebGL here, and this is what it objected to" are different
 // problems with different answers, and a page that only says the first sends the
@@ -423,7 +438,7 @@ function present() {
     gl.bindTexture(gl.TEXTURE_2D, desktopTex);
     // The composed desktop is already the whole screen, so it is drawn from its
     // own texture to the default one and nothing else happens.
-    drawQuad(glApi, 0, 0, width, height, width, height);
+    drawQuad(glApi, 0, 0, width, height, width, height, false);
     return;
   }
   fallbackPresent.drawImage(ctx2d, 0, 0);
@@ -460,14 +475,12 @@ function compose(bitmap, x, y, w, h) {
   gl.viewport(0, 0, glApi.width, glApi.height);
   gl.bindBuffer(gl.ARRAY_BUFFER, glApi.quad);
   gl.bindTexture(gl.TEXTURE_2D, regionTex);
-  // Flipped on upload so that the image's top row is the top of the texture,
-  // which is what makes the single flip in drawQuad enough.
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipUpload);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   const tw = bitmap.width || w;
   const th = bitmap.height || h;
-  drawQuad(glApi, x, y, w || tw, h || th, tw, th);
+  // An image uploaded with no flip has its top row at texture v=0, so the top of
+  // the rectangle is the end of the texture the quad must read from.
+  drawQuad(glApi, x, y, w || tw, h || th, tw, th, flipRegion);
 }
 
 // sizeDesktop makes both surfaces the size of the desktop and fills the composed

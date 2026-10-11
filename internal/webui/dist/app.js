@@ -24,6 +24,9 @@ const FORMAT_JPEG = 0x02;
 const FORMAT_PNG = 0x03;
 const FORMAT_RAW = 0x04;
 
+// The last frame of one complete redraw.
+const FLAG_BATCH_END = 0x0004;
+
 // The format byte decides how the bytes are read, so it is a map rather than a
 // comparison with a default. Treating anything that is not one known format as
 // another known format is how a frame decodes into nothing with no error to
@@ -961,7 +964,12 @@ async function drawFrame(buffer) {
   // whole desktop is on its way, which is what the queue is cleared for; it no
   // longer decides where a piece of one is drawn.
   ctx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
-  schedulePresent();
+  // Presented when the batch is whole, and not before. Presenting on the
+  // display's next refresh instead means showing the buffer at whatever moment
+  // the display happens to choose, which can be half way through composing the
+  // next desktop — and that is what the last of the tearing is.
+  if (flags & FLAG_BATCH_END) present();
+  else schedulePresent();
   bitmap.close();
 
   state.frameCount++;

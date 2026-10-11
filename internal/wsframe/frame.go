@@ -36,6 +36,12 @@ const (
 	// ignore the rectangle and blit to the origin. It exists so the sender can
 	// stop pretending a full repaint is a very large dirty rectangle.
 	FlagFull uint16 = 1 << 0
+	// FlagBatchEnd marks the last frame of one batch, which is one complete
+	// redraw. The client composes the desktop off screen and presents it once,
+	// and this is the signal that says the composition is whole: without it the
+	// presentation happens whenever the display next refreshes, which can be
+	// half way through painting the pieces of the next desktop.
+	FlagBatchEnd uint16 = 1 << 2
 	// FlagKeyframe marks the first frame of a stream, after which the client
 	// has something to draw on.
 	FlagKeyframe uint16 = 1 << 1

@@ -171,6 +171,12 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 			return wsframe.Frame{}, err
 		}
 		var flags uint16
+		// The last frame says the batch is complete, which is what the client
+		// waits for before showing any of it. Every batch this builds is one
+		// redraw, so the boundary is known here and nowhere else.
+		if i == len(work)-1 {
+			flags |= wsframe.FlagBatchEnd
+		}
 		// The flag is on the first frame of the batch and nowhere else. It says
 		// a whole desktop is on its way, which is what the client clears its
 		// queue for — and clearing is not additive, so a second frame carrying it

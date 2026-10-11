@@ -3,6 +3,8 @@ package stream
 import (
 	"image"
 	"testing"
+
+	"github.com/adfnekc/ad_explorer/internal/wsframe"
 )
 
 func TestStripsCoverTheRegionExactlyOnce(t *testing.T) {
@@ -24,6 +26,13 @@ func TestStripsCoverTheRegionExactlyOnce(t *testing.T) {
 		want := i == 0
 		if f.IsFull() != want {
 			t.Errorf("frame %d IsFull=%v, want %v", i, f.IsFull(), want)
+		}
+		// The client shows nothing until it is told the batch is whole, so a
+		// missing marker is a desktop that never appears and a marker in the
+		// wrong place is one shown half composed.
+		wantEnd := i == len(frames)-1
+		if got := f.Flags&wsframe.FlagBatchEnd != 0; got != wantEnd {
+			t.Errorf("frame %d batch-end=%v, want %v", i, got, wantEnd)
 		}
 	}
 	// 条带恰好覆盖整屏一次，无重叠无空隙

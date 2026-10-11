@@ -246,27 +246,29 @@ let glApi = null;
 function buildGL() {
   const gl = el.screen.getContext('webgl', GL_OPTIONS)
     || el.screen.getContext('experimental-webgl', GL_OPTIONS);
-  if (!gl) return null;
+  if (!gl) return { fail: '这个浏览器没有提供 WebGL 上下文' };
 
   const compile = (type, source) => {
     const sh = gl.createShader(type);
     gl.shaderSource(sh, source);
     gl.compileShader(sh);
     if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      return null;
+      return { fail: `着色器编译失败：${gl.getShaderInfoLog(sh)}` };
     }
     return sh;
   };
   const vs = compile(gl.VERTEX_SHADER, VS);
+  if (vs && vs.fail) return vs;
   const fs = compile(gl.FRAGMENT_SHADER, FS);
-  if (!vs || !fs) return null;
+  if (fs && fs.fail) return fs;
+  if (!vs || !fs) return { fail: '着色器没有编译出来' };
 
   const program = gl.createProgram();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    return null;
+    return { fail: `着色器程序链接失败：${gl.getProgramInfoLog(program)}` };
   }
   gl.useProgram(program);
 
@@ -296,8 +298,9 @@ function buildGL() {
   const fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, desktopTex, 0);
-  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-    return null;
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    return { fail: `离屏缓冲不可用（0x${status.toString(16)}）` };
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -344,7 +347,35 @@ function drawQuad(g, x, y, w, h, texW, texH) {
 // it is there and wrong, which is a case no amount of checking here can rule
 // out and which the operator would otherwise have no way past.
 const forcedSoftware = new URLSearchParams(location.search).get('compositor') === 'canvas2d';
-glApi = forcedSoftware ? null : buildGL();
+// The reason a failed setup gives up matters more than that it gave up: "no
+// WebGL here" and "WebGL here, and this is what it objected to" are different
+// problems with different answers, and a page that only says the first sends the
+// next reader looking in the wrong place.
+let glWhy = forcedSoftware ? '被 ?compositor=canvas2d 要求使用软件路径' : null;
+if (!forcedSoftware) {
+  const built = buildGL();
+  if (built && built.gl) {
+    glApi = built;
+  } else {
+    glWhy = built && built.fail ? built.fail : '未知原因';
+  }
+}
+
+// A canvas that has been given a WebGL context can never be given a 2D one, and
+// that is true even when the WebGL setup then failed and the context is about to
+// be thrown away. So a browser that has WebGL, but where this particular setup
+// fails a check, would be left with a canvas that can draw nothing at all: not
+// the fast path and not the slow one. A fresh element is the only way back, and
+// it keeps the id and the attributes the rest of the page looks for.
+//
+// Only when the context was actually created. A browser with no WebGL at all
+// gets null from getContext and its canvas is untouched, but swapping in that
+// case costs nothing and removes the need to tell the two apart.
+if (!glApi) {
+  const fresh = el.screen.cloneNode(false);
+  el.screen.replaceWith(fresh);
+  el.screen = fresh;
+}
 
 // Which compositor is in use is a fact worth being able to look up. A browser
 // without WebGL is shown the 2D path rather than nothing, so "it looks torn"
@@ -1225,7 +1256,7 @@ async function drawFrame(buffer) {
     // fault, and there is no other way to tell them apart from outside the page.
     note(glApi
       ? '收到第一帧画面；合成走 WebGL。'
-      : '收到第一帧画面；合成走 2D 画布，这个浏览器没有可用的 WebGL。');
+      : `收到第一帧画面；合成走 2D 画布（${glWhy}）。`);
   }
 }
 

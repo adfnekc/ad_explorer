@@ -203,21 +203,28 @@ ctx.imageSmoothingEnabled = false;
 const presentCtx = el.screen.getContext('2d', { alpha: false });
 presentCtx.imageSmoothingEnabled = false;
 
-let presentPending = false;
+let lastPresentAt = 0;
 
 function present() {
-  presentPending = false;
+  lastPresentAt = performance.now();
   presentCtx.drawImage(back, 0, 0);
 }
 
-// Coalesced to one presentation per display frame. Several refreshes can arrive
-// between two of the display's own, and showing the intermediate ones would be
-// work nobody sees; showing the newest is the whole point.
-function schedulePresent() {
-  if (presentPending) return;
-  presentPending = true;
-  requestAnimationFrame(present);
+// A safety net and not the mechanism. The buffer is shown when a batch ends, so
+// a mark that never arrived would leave a screen that never changed; this shows
+// what there is if nothing has been shown for a while and nothing is left to
+// draw. It is deliberately not a per-frame path: presenting on the display's
+// next refresh is what showed the buffer half composed, and doing that on the
+// way to every batch end would be worse than not showing it at all.
+const PRESENT_STALE_MS = 250;
+
+function presentIfStale() {
+  if (drawing) return;
+  if (performance.now() - lastPresentAt < PRESENT_STALE_MS) return;
+  present();
 }
+
+setInterval(presentIfStale, PRESENT_STALE_MS);
 
 // Both buffers are sized together because setting a canvas's size clears it, and
 // a buffer cleared on its own would present as a blank desktop.
@@ -969,7 +976,6 @@ async function drawFrame(buffer) {
   // the display happens to choose, which can be half way through composing the
   // next desktop — and that is what the last of the tearing is.
   if (flags & FLAG_BATCH_END) present();
-  else schedulePresent();
   bitmap.close();
 
   state.frameCount++;

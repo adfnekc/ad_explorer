@@ -139,3 +139,26 @@ func BenchmarkJPEGRegionSized(b *testing.B) {
 	full := makeDesktop(1280, 720)
 	benchEncoder(b, JPEG{}, full.SubImage(image.Rect(200, 150, 600, 400)).(*image.RGBA), 85)
 }
+
+// One frame of a scrolling 1080p desktop is many regions, and they are encoded
+// one after another today. This measures what that costs, which is the number
+// that decides whether the frame loop can keep up with a scroll.
+func BenchmarkScrollRegionsSerial(b *testing.B) {
+	full := makeDesktop(1920, 1080)
+	const regions = 24 // a scrolling window, a taskbar, a clock, a caret, edges
+	rects := make([]image.Rectangle, 0, regions)
+	for i := 0; i < regions; i++ {
+		x := (i % 6) * 320
+		y := (i / 6) * 270
+		rects = append(rects, image.Rect(x, y, x+320, y+270))
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		for _, r := range rects {
+			sub := full.SubImage(r).(*image.RGBA)
+			if _, _, err := (PNG{}).Encode(nil, sub, 85); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}

@@ -295,6 +295,13 @@ function buildGL() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+  // A texture with no storage cannot be a framebuffer attachment: the check
+  // below is what said so, with 0x8cd6, because the desktop's size is not known
+  // until a session says what it is and nothing had been allocated here. One
+  // pixel is enough to make the attachment complete, and sizeDesktop reallocates
+  // it at the real size before anything is drawn.
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
   const fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, desktopTex, 0);
@@ -313,7 +320,9 @@ function buildGL() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  return { gl, program, quad, desktopTex, regionTex, fbo, width: 0, height: 0 };
+  // One rather than zero, so a draw that somehow happens before the desktop is
+  // sized divides by something instead of producing NaN geometry.
+  return { gl, program, quad, desktopTex, regionTex, fbo, width: 1, height: 1 };
 }
 
 // drawQuad fills the attribute buffer with one rectangle and draws it.
@@ -324,6 +333,10 @@ function buildGL() {
 // vertical flip happens once here in the geometry rather than in the image.
 function drawQuad(g, x, y, w, h, texW, texH) {
   const { gl, width, height } = g;
+  // Bound here rather than by the caller, because present() can be the first
+  // draw — it is called when the desktop is sized — and a bufferSubData with
+  // nothing bound writes nowhere.
+  gl.bindBuffer(gl.ARRAY_BUFFER, g.quad);
   const x0 = (x / width) * 2 - 1;
   const x1 = ((x + w) / width) * 2 - 1;
   const y1 = 1 - (y / height) * 2;
@@ -433,7 +446,7 @@ function compose(bitmap, x, y, w, h) {
     fallbackCtx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
     return;
   }
-  const { gl, regionTex, desktopTex, fbo } = glApi;
+  const { gl, regionTex, fbo } = glApi;
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.viewport(0, 0, glApi.width, glApi.height);
   gl.bindBuffer(gl.ARRAY_BUFFER, glApi.quad);
@@ -446,7 +459,6 @@ function compose(bitmap, x, y, w, h) {
   const tw = bitmap.width || w;
   const th = bitmap.height || h;
   drawQuad(glApi, x, y, w || tw, h || th, tw, th);
-  gl.bindTexture(gl.TEXTURE_2D, desktopTex);
 }
 
 // sizeDesktop makes both surfaces the size of the desktop and fills the composed

@@ -114,6 +114,8 @@ const state = {
   batches: 0,
   presents: 0,
   batchGapMs: 0,
+  gapMin: 0,
+  continuous: false,
   batchSize: 0,
   piecesInBatch: 0,
   lastBatchAt: 0,
@@ -988,11 +990,17 @@ async function drawFrame(buffer) {
     // the remote itself changed the picture in more than one go, and no client
     // can make that atomic — which is a different fault from this one and needs
     // a different answer.
+    // Only gaps that mean "still changing". An idle session has no redraws at
+    // all, so an average over everything measures how long the operator sat
+    // still — 603 ms was mostly that, and it said nothing about the rate during
+    // a drag, which is the only stretch that matters here.
     const now = performance.now();
-    if (state.batches > 0) {
-      const gap = now - state.lastBatchAt;
+    const gap = now - state.lastBatchAt;
+    if (state.batches > 0 && gap < 500) {
       state.batchGapMs = state.batchGapMs === 0 ? gap : state.batchGapMs * 0.8 + gap * 0.2;
+      if (state.gapMin === 0 || gap < state.gapMin) state.gapMin = gap;
     }
+    state.continuous = gap < 500;
     state.lastBatchAt = now;
     state.batchSize = state.piecesInBatch;
     state.piecesInBatch = 0;
@@ -1027,7 +1035,8 @@ function renderInputTelemetry() {
     (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`) +
     ` · 帧 ${state.framesDrawn}` +
     ` · 批 ${state.batches}/${state.batchSize}片 · 呈现 ${state.presents}` +
-    (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms` : '') +
+    (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms(最小${state.gapMin.toFixed(1)})` : '') +
+    (state.continuous ? ' · 变化中' : ' · 静止') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }
 

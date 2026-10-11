@@ -576,6 +576,12 @@ function onAuthExpired() {
     state.session = null;
     try { sessionStorage.removeItem(SESSION_KEY); } catch { /* private mode */ }
   }
+  // The picture is dealt with here as well as where a session ends on its own.
+  // This path tears the session down itself instead of going through the one
+  // that does, so a page whose console login expired was left showing a live
+  // looking desktop behind the logon form — the one case where the picture is
+  // most certainly stale, and it was the one that kept its colour.
+  renderDisconnectButton();
   el.loginStatus.textContent = '控制台登录已过期，请重新输入口令。';
   showLogin();
 }

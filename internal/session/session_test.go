@@ -193,6 +193,9 @@ type fakeTransport struct {
 	frames   [][]wsframe.Frame
 	closed   bool
 	sendErr  error
+	// order is everything the test asked to be recorded, in the order it
+	// happened, from whichever side recorded it.
+	order []string
 
 	// incoming carries encoded bytes rather than control values, so the fake
 	// exercises the real codec. Passing decoded values straight in would hide a
@@ -228,7 +231,43 @@ func (f *fakeTransport) SendFrames(fr []wsframe.Frame) error {
 		return f.sendErr
 	}
 	f.frames = append(f.frames, fr)
+	// File chunks go into the shared order as well, so a test can say whether a
+	// read happened before or after the chunk before it went out.
+	for _, one := range fr {
+		if one.Type != wsframe.TypeFile {
+			continue
+		}
+		if _, off, _, err := wsframe.ParseFileChunk(one); err == nil {
+			f.noteLocked(fmt.Sprintf("send:%d", off))
+		}
+	}
 	return nil
+}
+
+// note adds to the shared order. Reads and sends both use it, under the one
+// mutex, so the order it records is the order things happened rather than two
+// lists that have to be lined up afterwards.
+func (f *fakeTransport) note(s string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noteLocked(s)
+}
+
+func (f *fakeTransport) noteLocked(s string) { f.order = append(f.order, s) }
+
+func (f *fakeTransport) orderLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.order...)
+}
+
+func (f *fakeTransport) indexOf(s string) int {
+	for i, one := range f.orderLog() {
+		if one == s {
+			return i
+		}
+	}
+	return -1
 }
 
 func (f *fakeTransport) Receive() (Message, error) {
@@ -1629,6 +1668,9 @@ type fakeFiles struct {
 	content  map[uint32][]byte
 	readErr  error
 	begun    bool
+	// onRead is called with the offset of every remote read, outside the lock,
+	// so a test can record when the session asked for what.
+	onRead func(off int64)
 }
 
 func (f *fakeFiles) Offer(p rdp.FileProvider) {
@@ -1651,6 +1693,9 @@ func (f *fakeFiles) ReadRemoteFile(index uint32, off int64, n int) ([]byte, erro
 	data := f.content[index]
 	f.mu.Unlock()
 
+	if f.onRead != nil {
+		f.onRead(off)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1876,6 +1921,44 @@ func TestSessionStreamsADownloadInChunks(t *testing.T) {
 	for i := range payload {
 		if got[i] != payload[i] {
 			t.Fatalf("byte %d is %d, want %d", i, got[i], payload[i])
+		}
+	}
+}
+
+// The remote read and the write to the client are independent, so the next
+// range has to be asked for before this one is sent. Recording both in one
+// order is what makes that checkable: the serial version of the loop reads a
+// range, sends it, and only then reads the next, so read:1 must come after
+// send:0 there and before it here.
+func TestDownloadAsksForTheNextRangeBeforeSendingThisOne(t *testing.T) {
+	payload := make([]byte, 3*downloadChunk)
+	files := &fakeFiles{content: map[uint32][]byte{3: payload}}
+	_, tr := newSessionWithFiles(t, files)
+	drainStartup(t, tr)
+
+	files.onRead = func(off int64) { tr.note(fmt.Sprintf("read:%d", off)) }
+
+	files.announce([]rdp.RemoteFile{{Index: 3, Name: "three.bin", Size: int64(len(payload))}})
+	waitFor(t, "the manifest", func() bool { return tr.firstOfType("files.remote") != nil })
+	tr.send(t, wsframe.FilesGet{Index: 3})
+	waitFor(t, "the download to finish", func() bool { return tr.firstOfType("files.end") != nil })
+
+	order := tr.orderLog()
+	if len(order) == 0 {
+		t.Fatal("nothing was recorded, so the test proves nothing")
+	}
+	for n := int64(0); n+downloadChunk < int64(len(payload)); n += downloadChunk {
+		read := tr.indexOf(fmt.Sprintf("read:%d", n+downloadChunk))
+		send := tr.indexOf(fmt.Sprintf("send:%d", n))
+		if read < 0 {
+			t.Fatalf("range %d was never read; order = %v", n+downloadChunk, order)
+		}
+		if send < 0 {
+			t.Fatalf("range %d was never sent; order = %v", n, order)
+		}
+		if read > send {
+			t.Fatalf("range %d was read after range %d was sent, so the two waits "+
+				"added up instead of overlapping; order = %v", n+downloadChunk, n, order)
 		}
 	}
 }

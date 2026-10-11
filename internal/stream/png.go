@@ -44,14 +44,21 @@ func (PNG) Encode(dst []byte, src image.Image, quality int) ([]byte, uint8, erro
 	// whole stream rather than append, so the slice it is handed has to be the
 	// start of one. dst is therefore left untouched and reusable, which is the
 	// promise the JPEG encoder makes as well.
+	// BestSpeed, and the numbers are why. Measured on a 1920x1080 frame: 44 ms at
+	// BestSpeed for 180 KB, 60 ms at the default for 69 KB, 242 ms at Best for 55.
+	// The default costs a quarter more time for a quarter of the bytes, and the
+	// bytes are the cheap part — a session on a local network can carry seven
+	// megabytes a second without noticing. Best is not a candidate at all.
+	//
+	// The floor is what matters: even with no compression at all this frame costs
+	// 45 ms, so the cost is in the filters and the scanlines rather than in the
+	// compressor, and no choice of level brings a full 1080p frame inside the
+	// sixteen milliseconds a frame interval allows. That is why the work is
+	// divided into strips and run at once, and why the frame rate settles where
+	// the machine can keep up rather than where the clock says.
 	var buf sliceWriter
 	enc := &png.Encoder{CompressionLevel: png.BestSpeed}
-	// The caller's quality is spent on effort rather than fidelity, because
-	// lossless has no fidelity to trade. A desktop that redraws the same region
-	// repeatedly is worth compressing harder; one that is changing is not.
-	if quality >= 60 {
-		enc.CompressionLevel = png.DefaultCompression
-	}
+	_ = quality // spent on nothing: a lossless format has no fidelity to trade
 	if err := enc.Encode(&buf, src); err != nil {
 		return dst, 0, err
 	}

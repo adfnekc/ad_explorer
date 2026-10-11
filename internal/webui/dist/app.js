@@ -359,7 +359,16 @@ function drawQuad(g, x, y, w, h, texW, texH) {
 // fallback below is already what happens when WebGL is missing; this is for when
 // it is there and wrong, which is a case no amount of checking here can rule
 // out and which the operator would otherwise have no way past.
-const forcedSoftware = new URLSearchParams(location.search).get('compositor') === 'canvas2d';
+const params = new URLSearchParams(location.search);
+const forcedSoftware = params.get('compositor') === 'canvas2d';
+// A region's pixels go into the composed desktop the right way up only if the
+// upload orientation matches how the quad reads them, and getting that pairing
+// wrong flips every region inside its own rectangle — which on a desktop sent as
+// strips looks like each band separately reversed, with the wallpaper appearing
+// in pieces at the wrong offsets. It cannot be checked on this machine, because
+// no browser here will give a WebGL context at all, so the pairing is a switch
+// rather than a belief: ?flipy=1 is the other one.
+const flipUpload = params.get('flipy') === '1';
 // The reason a failed setup gives up matters more than that it gave up: "no
 // WebGL here" and "WebGL here, and this is what it objected to" are different
 // problems with different answers, and a page that only says the first sends the
@@ -453,7 +462,7 @@ function compose(bitmap, x, y, w, h) {
   gl.bindTexture(gl.TEXTURE_2D, regionTex);
   // Flipped on upload so that the image's top row is the top of the texture,
   // which is what makes the single flip in drawQuad enough.
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipUpload);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   const tw = bitmap.width || w;

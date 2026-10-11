@@ -570,14 +570,15 @@ func (s *Session) handleRemoteEvent(ev rdp.Event) bool {
 	switch e := ev.(type) {
 	case rdp.Ready:
 		// The client already has SessionReady from the start of run; this only
-		// fires if grdp reports a size other than the one requested.
+		// fires if the server settled on a size other than the one requested,
+		// which it does when the request is not a display mode it has.
+		//
+		// It goes through the same path a later resize takes rather than sending
+		// its own, so that the size this session remembers is the size it told
+		// the client about. Without that, a reload would be handed the requested
+		// size again by header() and disagree with the picture on screen.
 		if e.Width != s.cfg.Width || e.Height != s.cfg.Height {
-			s.send(wsframe.SessionReady{
-				Width:    e.Width,
-				Height:   e.Height,
-				Name:     s.cfg.Name,
-				Protocol: protocolName(s.cfg.Protocol),
-			})
+			s.onResize(e.Width, e.Height)
 		}
 
 	case rdp.ClipboardText:

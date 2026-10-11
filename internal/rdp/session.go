@@ -332,7 +332,11 @@ func Dial(ctx context.Context, cfg Config) (*Session, error) {
 	// Handlers are registered before Login so no event can be missed.
 	c.OnReady(func() {
 		s.sendPreamble()
-		s.emit(Ready{Width: cfg.Width, Height: cfg.Height, Name: cfg.Name, Protocol: cfg.Protocol})
+		// The size the server agreed to, not the one asked for. A server rounds
+		// a request to a display mode it has, so asking for 720 can give 768,
+		// and the request is a wish rather than the answer.
+		w, h := s.currentSize(cfg.Width, cfg.Height)
+		s.emit(Ready{Width: w, Height: h, Name: cfg.Name, Protocol: cfg.Protocol})
 	})
 	c.OnClipboardText(func(text string) {
 		s.emit(ClipboardText{Text: text, At: time.Now()})
@@ -578,6 +582,23 @@ const (
 	// bit signed field the library clamps to, which is 255 against 120.
 	maxWheelNotches = 255 / client.WheelDelta
 )
+
+// currentSize is the desktop the server is drawing at, which is not always the
+// one that was asked for: a server rounds the request to a display mode it has.
+//
+// It is read at the moment the session becomes ready rather than waited for,
+// because OnResize reports a change and the first size is not a change. Reading
+// it goes through Framebuffer, which reports ErrNotReady until there is a desktop
+// to read: the requested size is then the best that can be said, and it is the
+// only thing that can be said for a session with no framebuffer of its own.
+func (s *Session) currentSize(askedWidth, askedHeight int) (int, int) {
+	fb, err := s.Framebuffer()
+	if err != nil {
+		return askedWidth, askedHeight
+	}
+	b := fb.Bounds()
+	return b.Dx(), b.Dy()
+}
 
 // sendPreamble sends the input sequence mstsc sends once the session is ready: a
 // Tab release, the toggle key state, then another Tab release. Both mstsc and

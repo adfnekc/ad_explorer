@@ -670,3 +670,16 @@ func TestRedactKeepsTheChainWhenThereIsNothingToScrub(t *testing.T) {
 		t.Errorf("redact did not mark what it removed: %q", scrubbed.Error())
 	}
 }
+
+// The size reported when a session becomes ready is the one the server is
+// drawing at, which is not always the one that was asked for. Before there is a
+// desktop to read, the request is the only thing there is to say, and saying
+// nothing at all is the one answer that must not be given: a client told a zero
+// size sizes its canvas to zero and shows a blank page.
+func TestCurrentSizeFallsBackToWhatWasAsked(t *testing.T) {
+	s := &Session{} // no client, so there is no framebuffer to read
+	w, h := s.currentSize(1024, 768)
+	if w != 1024 || h != 768 {
+		t.Fatalf("currentSize with nothing to read = %dx%d, want 1024x768", w, h)
+	}
+}

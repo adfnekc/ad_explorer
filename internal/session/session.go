@@ -142,6 +142,12 @@ type Session struct {
 	// does nothing if it has moved, which is what stops a timer left behind by
 	// one disconnect from ending the session a reconnect recovered.
 	epoch uint64
+	// fullSentTo is the last client that was given a whole desktop. A client that
+	// is not it is one that has never been given one, so the frame loop promotes
+	// the next frame to a full repaint rather than sending a part of a desktop
+	// this client does not have. Guarded by writeMu, because it is read and
+	// written at the point a frame is sent.
+	fullSentTo Transport
 	// repaint requests a full frame. The accumulator belongs to the frame loop,
 	// so a reconnect asks for the repaint here rather than seeding it directly.
 	repaint   bool
@@ -670,7 +676,14 @@ func (s *Session) send(c wsframe.Control) error {
 // While the session is detached the frames are dropped: there is no browser to
 // receive them, but that is not a reason to end the session or to stop the
 // frame loop, so a reconnect still finds the desktop.
+// sendFrames writes frames that are not part of the desktop picture: file chunks
+// and cursor shapes. They are for whoever is attached and are not built for one
+// client in particular, so they are sent to whichever is there.
 func (s *Session) sendFrames(frames []wsframe.Frame) error {
+	return s.sendFramesTo(frames, nil)
+}
+
+func (s *Session) sendFramesTo(frames []wsframe.Frame, builtFor Transport) error {
 	if len(frames) == 0 {
 		return nil
 	}
@@ -678,6 +691,15 @@ func (s *Session) sendFrames(frames []wsframe.Frame) error {
 	t := s.transportLocked()
 	if t == nil {
 		s.writeMu.Unlock()
+		return nil
+	}
+	if builtFor != nil && t != builtFor {
+		// The client this was built for has gone, and the one that replaced it
+		// has not been given the desktop yet. Dropping it leaves the regions
+		// accumulated, so the frame built next time is the full repaint the new
+		// client needs rather than a rectangle it cannot place.
+		s.writeMu.Unlock()
+		s.acc.Add(s.acc.Bounds())
 		return nil
 	}
 	err := t.SendFrames(frames)
@@ -879,6 +901,22 @@ func (s *Session) render(update Update) bool {
 		s.acc.Add(b)
 	}
 
+	// Which client this frame is for, read before anything is built for it. A
+	// frame built for one client and handed to another is the fault this exists
+	// to stop: the client that replaced it holds nothing, so a rectangle drawn
+	// onto a canvas it has never had is what it would receive. The same read says
+	// whether that client has been given the whole desktop yet, because a client
+	// that has not must not be handed a part of it however the reconnect was
+	// timed — this is checked at the send rather than inferred from an epoch, so
+	// there is no window in which it can be false and acted on as if true.
+	s.writeMu.Lock()
+	target := s.transportLocked()
+	needsFull := target != nil && target != s.fullSentTo
+	s.writeMu.Unlock()
+	if needsFull {
+		s.acc.Add(s.acc.Bounds())
+	}
+
 	frames, err := s.builder.Build(img, s.acc, s.quality.Value())
 	// The regions are forgotten here whatever happens next, so every way out of
 	// this function has to leave the accumulator asking for the whole desktop if
@@ -893,11 +931,21 @@ func (s *Session) render(update Update) bool {
 		s.noteDropped()
 		return true
 	}
-	if err := s.sendFrames(frames); err != nil {
+	if err := s.sendFramesTo(frames, target); err != nil {
 		// Part of the frame may have gone out before the failure, so the client's
 		// copy is half updated rather than untouched.
 		s.acc.Add(s.acc.Bounds())
 		return false
+	}
+	// Remembered only after it has been sent, so a frame that was built and then
+	// dropped for belonging to a client that left is not counted as this client
+	// having been given the desktop.
+	if needsFull && len(frames) > 0 && frames[0].IsFull() {
+		s.writeMu.Lock()
+		if s.fullSentTo != target {
+			s.fullSentTo = target
+		}
+		s.writeMu.Unlock()
 	}
 	return true
 }

@@ -1318,14 +1318,14 @@ window.addEventListener('blur', () => {
 });
 
 window.addEventListener('focus', () => {
-  pushLocalClipboard();
+  focusedAgain();
 });
 
 // A clipboard read is only allowed while the page is focused, so the moment it
 // becomes visible again is the first chance to see what changed while it was
 // hidden.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) pushLocalClipboard();
+  if (!document.hidden) focusedAgain();
 });
 
 // The page going away is the other way a held button is never released.
@@ -1586,18 +1586,33 @@ el.sendClipboard.addEventListener('click', () => {
 // not fire for a page that is not focused anyway.
 const CLIPBOARD_POLL = 1500;
 let clipboardTimer = null;
-let clipboardDenied = false;
+// Set when a read is refused, and the time before which the next attempt waits.
+// A refusal is ordinary rather than final: readText refuses whenever the page is
+// not focused, which is true for as long as the operator is looking at something
+// else, and treating that as an answer for the rest of the session is what
+// stopped the clipboard from syncing again after one early poll. The wait grows
+// so a real refusal is not asked for every second, and focus clears it, so
+// clicking back on the page retries straight away.
+let clipboardRetryAt = 0;
+let clipboardFailures = 0;
 
 async function pushLocalClipboard() {
-  if (!state.session || clipboardDenied) return;
+  if (!state.session) return;
   if (typeof navigator.clipboard?.readText !== 'function') return;
+  if (performance.now() < clipboardRetryAt) return;
   let text;
   try {
     text = await navigator.clipboard.readText();
+    clipboardFailures = 0;
+    clipboardRetryAt = 0;
   } catch {
-    // Refused, or the page is not focused. Both are ordinary, and asking again
-    // every 1.5 seconds would fill the console with the same refusal.
-    clipboardDenied = true;
+    // Refused, or the page is not focused. Retried rather than given up on, on
+    // a wait that doubles to half a minute: an unfocused page starts working the
+    // moment it is focused again, and a refusal that is real costs one attempt
+    // every half minute rather than one every second.
+    clipboardFailures++;
+    const wait = Math.min(CLIPBOARD_POLL * 2 ** clipboardFailures, 30000);
+    clipboardRetryAt = performance.now() + wait;
     return;
   }
   if (!text || text === state.localClipboard) return;
@@ -1606,6 +1621,14 @@ async function pushLocalClipboard() {
   // copying each other's text into a loop.
   if (text === state.remoteClipboard) return;
   send({ type: 'clipboard.set', text });
+}
+
+// focusedAgain lets a page that was refused while it was in the background try
+// immediately, rather than waiting out a back-off earned for being unfocused.
+function focusedAgain() {
+  clipboardFailures = 0;
+  clipboardRetryAt = 0;
+  pushLocalClipboard();
 }
 
 function startClipboardWatch() {

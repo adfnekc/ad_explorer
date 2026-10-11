@@ -136,6 +136,14 @@ func run(args []string) error {
 	if opts.maxFPS < 1 {
 		return fmt.Errorf("-max-fps must be at least 1, not %d", opts.maxFPS)
 	}
+	// Capped because past this there is nothing left to gain: a desktop is shown
+	// on a display that refreshes sixty or a hundred and twenty times a second,
+	// so refreshes beyond that are spent encoding pictures that are replaced
+	// before anything can see them. The limit is on how often the desktop is
+	// redrawn, and one refresh is several messages when it is sent as strips.
+	if opts.maxFPS > 120 {
+		return fmt.Errorf("-max-fps must be at most 120, not %d", opts.maxFPS)
+	}
 	registry := session.NewRegistry(session.Options{
 		Max:            opts.maxSessions,
 		IdleTimeout:    opts.idleTimeout,
@@ -277,9 +285,10 @@ func parseFlags(args []string) (options, error) {
 			"blip can attach to the same desktop. Negative ends the session as soon as "+
 			"the browser does")
 	fs.IntVar(&opts.maxFPS, "max-fps", 60,
-		"the most frames a second one session will encode. Encoding is the "+
-			"expensive part of a session, so a server that draws in a burst has its "+
-			"regions merged into fewer frames rather than encoded one per update")
+		"the most times a second one session will redraw the desktop, up to 120. "+
+			"Encoding is the expensive part of a session, so a server that draws in a "+
+			"burst has its regions merged into fewer redraws rather than encoded one "+
+			"per update, and one redraw is several messages when it is sent as strips")
 	fs.StringVar(&opts.tlsCert, "tls-cert", "",
 		"PEM certificate to serve HTTPS with. A remote password travels in a "+
 			"request body, so without this the gateway must sit behind a proxy that "+

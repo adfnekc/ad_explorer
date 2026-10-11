@@ -1102,9 +1102,16 @@ func (s *Session) sendStats() {
 	s.send(stats)
 }
 
+// recordSent counts one per call rather than one per frame, because the number
+// the operator reads is how often the desktop changed and not how many messages
+// that took. A large refresh is sent as several strips, so counting frames made
+// a sixty-a-second session report two or three hundred and left the one number
+// worth watching saying nothing about what was being watched.
 func (s *Session) recordSent(frames []wsframe.Frame) {
 	s.statsMu.Lock()
-	s.frames += uint64(len(frames))
+	if len(frames) > 0 {
+		s.frames++
+	}
 	for _, f := range frames {
 		s.bytes += uint64(len(f.Payload))
 	}

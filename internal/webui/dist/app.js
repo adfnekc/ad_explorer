@@ -183,8 +183,51 @@ const el = {
   signOut: $('signOut'),
 };
 
-const ctx = el.screen.getContext('2d', { alpha: false });
+// The desktop is composed in a buffer the screen never shows, and presented in
+// one go.
+//
+// This is what makes a refresh atomic. A remote desktop arrives as many
+// rectangles over many ticks — and a large one is now sent as several strips —
+// so drawing each onto the visible canvas as it arrives shows half of one
+// desktop beside half of the last. That is the tearing: not the display scanning
+// out mid-draw, but the client painting pieces of two different desktops in the
+// same instant. Composing them into a buffer and presenting on the display's own
+// cadence means the screen only ever shows complete states, however many pieces
+// went into the one it is showing.
+const back = document.createElement('canvas');
+const ctx = back.getContext('2d', { alpha: false });
 ctx.imageSmoothingEnabled = false;
+const presentCtx = el.screen.getContext('2d', { alpha: false });
+presentCtx.imageSmoothingEnabled = false;
+
+let presentPending = false;
+
+function present() {
+  presentPending = false;
+  presentCtx.drawImage(back, 0, 0);
+}
+
+// Coalesced to one presentation per display frame. Several refreshes can arrive
+// between two of the display's own, and showing the intermediate ones would be
+// work nobody sees; showing the newest is the whole point.
+function schedulePresent() {
+  if (presentPending) return;
+  presentPending = true;
+  requestAnimationFrame(present);
+}
+
+// Both buffers are sized together because setting a canvas's size clears it, and
+// a buffer cleared on its own would present as a blank desktop.
+function sizeDesktop(width, height, fill) {
+  back.width = width;
+  back.height = height;
+  el.screen.width = width;
+  el.screen.height = height;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, width, height);
+  presentCtx.drawImage(back, 0, 0);
+}
 
 // ---------------------------------------------------------------- transport
 
@@ -466,10 +509,7 @@ async function connect(host) {
   state.session = created;
   state.graceMs = Math.max(0, created.reconnectGraceMs || 0);
   try { sessionStorage.setItem(SESSION_KEY, created.id); } catch { /* private mode */ }
-  el.screen.width = created.width;
-  el.screen.height = created.height;
-  ctx.fillStyle = '#008080';
-  ctx.fillRect(0, 0, created.width, created.height);
+  sizeDesktop(created.width, created.height, '#008080');
 
   openSocket(created.id);
 }
@@ -702,10 +742,7 @@ function handleControl(message) {
   switch (message.type) {
     case 'session.ready':
       state.session = { ...state.session, ...message };
-      el.screen.width = message.width;
-      el.screen.height = message.height;
-      ctx.fillStyle = '#008080';
-      ctx.fillRect(0, 0, message.width, message.height);
+      sizeDesktop(message.width, message.height, '#008080');
       // The server rounds a requested size to a mode it has, so the control
       // shows what is in effect rather than what was asked for. A size that is
       // not in the list — a synthetic desktop, or a mode nobody thought to offer
@@ -924,6 +961,7 @@ async function drawFrame(buffer) {
   // whole desktop is on its way, which is what the queue is cleared for; it no
   // longer decides where a piece of one is drawn.
   ctx.drawImage(bitmap, x, y, w || bitmap.width, h || bitmap.height);
+  schedulePresent();
   bitmap.close();
 
   state.frameCount++;

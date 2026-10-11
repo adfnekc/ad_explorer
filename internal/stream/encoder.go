@@ -5,6 +5,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"runtime"
+	"sync"
 
 	"github.com/adfnekc/ad_explorer/internal/wsframe"
 )
@@ -115,7 +117,13 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 	}
 
 	bounds := acc.Bounds()
-	frames := make([]wsframe.Frame, 0, len(rects))
+
+	// Clipping is done first and on its own, because it is cheap and because it
+	// decides how many regions there are to spread out. The sequence numbers are
+	// handed out here too, in this order, so that encoding them in a different
+	// order cannot change the numbers the client sees: a gap in the sequence is
+	// how the client knows a frame went missing.
+	work := make([]image.Rectangle, 0, len(rects))
 	for _, r := range rects {
 		// The rectangle is clipped here, before the pixels are taken, so that
 		// the header and the payload describe the same thing. The client scales
@@ -131,31 +139,85 @@ func (b *Builder) Build(src image.Image, acc *Accumulator, quality int) ([]wsfra
 			// were already built with it.
 			continue
 		}
-		region, err := crop(src, r, bounds)
+		work = append(work, r)
+	}
+	if len(work) == 0 {
+		return nil, nil
+	}
+	first := b.seq + 1
+	b.seq += uint32(len(work))
+
+	build := func(i int) (wsframe.Frame, error) {
+		region, err := crop(src, work[i], bounds)
 		if err != nil {
-			return nil, err
+			return wsframe.Frame{}, err
 		}
 		payload, format, err := b.enc.Encode(nil, region, quality)
 		if err != nil {
-			return nil, err
+			return wsframe.Frame{}, err
 		}
-		b.seq++
-
 		var flags uint16
 		if full {
 			flags |= wsframe.FlagFull
 		}
-		if b.seq == 1 {
+		if first+uint32(i) == 1 {
 			flags |= wsframe.FlagKeyframe
 		}
-		frames = append(frames, wsframe.Frame{
+		return wsframe.Frame{
 			Type:    wsframe.TypeImage,
 			Format:  format,
 			Flags:   flags,
-			Rect:    r,
-			Seq:     b.seq,
+			Rect:    work[i],
+			Seq:     first + uint32(i),
 			Payload: payload,
-		})
+		}, nil
+	}
+
+	// The regions do not depend on each other, and are put back in the order they
+	// were clipped into because that order is what decides which of two
+	// overlapping regions wins on the client. One region is one goroutine's worth
+	// of work and not two, so a plain loop is kept for the common case: a caret
+	// or a clock is usually all that changed, and spreading one waking per frame
+	// across the machine to encode it would cost more than it saves.
+	if len(work) == 1 {
+		frame, err := build(0)
+		if err != nil {
+			return nil, err
+		}
+		return []wsframe.Frame{frame}, nil
+	}
+
+	frames := make([]wsframe.Frame, len(work))
+	errs := make([]error, len(work))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(work) {
+		workers = len(work)
+	}
+	// No fewer than two: this path is only taken when there is more than one
+	// region, and a machine reported as having one processor would otherwise do
+	// the work twice as slowly through a channel for nothing.
+	if workers < 2 {
+		workers = 2
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := range work {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			frames[i], errs[i] = build(i)
+		}(i)
+	}
+	wg.Wait()
+
+	// Reported in the order they were asked for, so which region is named when
+	// several fail does not depend on which goroutine lost the race.
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
 	}
 	return frames, nil
 }

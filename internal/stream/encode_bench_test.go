@@ -162,3 +162,41 @@ func BenchmarkScrollRegionsSerial(b *testing.B) {
 		}
 	}
 }
+
+// The same 24 regions through the builder, which now encodes them at once. This
+// is the number that matters: it is what the frame loop actually spends.
+func BenchmarkScrollRegionsThroughBuilder(b *testing.B) {
+	full := makeDesktop(1920, 1080)
+	acc := NewAccumulator(image.Rect(0, 0, 1920, 1080), DefaultMaxRects, DefaultFullFraction)
+	for i := 0; i < 24; i++ {
+		x := (i % 6) * 320
+		y := (i / 6) * 270
+		acc.Add(image.Rect(x, y, x+320, y+270))
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := NewBuilder(nil).Build(full, acc, 85); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// The same workload below the point where the accumulator decides the whole
+// desktop changed. Eight regions merge into one rectangle, which is worth
+// knowing before reading anything into these numbers: there is often nothing to
+// spread out, because the merge has already done it.
+func BenchmarkScrollRegionsFewer(b *testing.B) {
+	full := makeDesktop(1920, 1080)
+	acc := NewAccumulator(image.Rect(0, 0, 1920, 1080), DefaultMaxRects, DefaultFullFraction)
+	for i := 0; i < 8; i++ {
+		x := (i % 4) * 320
+		y := (i / 4) * 270
+		acc.Add(image.Rect(x, y, x+320, y+270))
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := NewBuilder(nil).Build(full, acc, 85); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -404,8 +404,15 @@ func frame(seq uint32, full bool, batchEnd bool, x, y, w, h int, img image.Image
 	if full {
 		flags |= flagFull
 	}
-	if full || batchEnd {
+	// A batch end says the redraw is whole; it must not also claim to be a
+	// whole desktop, because that makes the client drop the pieces it is still
+	// holding for this redraw, which is exactly the half-drawn screen the flag is
+	// meant to prevent.
+	if full {
 		flags |= flagFull | flagBatch
+	}
+	if batchEnd {
+		flags |= flagBatch
 	}
 	binary.LittleEndian.PutUint16(out[2:], flags)
 	binary.LittleEndian.PutUint16(out[4:], uint16(x))

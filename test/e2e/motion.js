@@ -44,6 +44,7 @@ async function build() {
 
   const mock = spawn(mockBin, ['-motion', '-listen', `127.0.0.1:${PORT}`], { stdio: 'ignore' });
   await sleep(300);
+  const force2d = !!process.env.ADX_FORCE_2D;
   const browser = await chromium.launch({
     executablePath: CHROME,
     // A headless browser with no display paces requestAnimationFrame at a few
@@ -64,6 +65,17 @@ async function build() {
   try {
     for (let round = 0; round < 10; round++) {
       const ctx = await browser.newContext();
+      if (force2d) {
+        // Refusing WebGL on purpose, so the same frames go down the 2D
+        // compositor and a fault that is only on one path can be told apart.
+        await ctx.addInitScript(() => {
+          const real = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+            if (String(type).includes('webgl')) return null;
+            return real.call(this, type, ...rest);
+          };
+        });
+      }
       const page = await ctx.newPage();
       const errors = [];
       page.on('pageerror', (e) => errors.push(String(e)));
@@ -119,7 +131,22 @@ async function build() {
             inRun = hit;
             if (hit) { pixels++; if (minX < 0) minX = x; maxX = x; }
           }
-          return { runs, pixels, spread: pixels ? maxX - minX : 0, barW };
+          // The bar is also reported as the ranges that make it up, because
+          // "two blocks" is only useful once it is known where they are.
+          const isBarX = (x) => {
+            for (let y = top; y < top + band; y += 2) {
+              if (isBar((y * w + x) * 4)) return true;
+            }
+            return false;
+          };
+          const ranges = [];
+          let start = -1;
+          for (let x = 0; x <= w; x++) {
+            const hit = x < w && isBarX(x);
+            if (hit && start < 0) start = x;
+            if (!hit && start >= 0) { ranges.push([start, x - 1]); start = -1; }
+          }
+          return { runs, pixels, spread: pixels ? maxX - minX : 0, barW, ranges };
         };
 
         const look = () => {
@@ -149,7 +176,7 @@ async function build() {
       if (torn.length || unreadable || errors.length) failures++;
 
       console.log(
-        `round ${round}: compositor=${compositor} presentations=${seen.length} ` +
+        `round ${round}: compositor=${compositor}${force2d ? ' (forced 2d)' : ''} presentations=${seen.length} ` +
         `torn=${torn.length} blank=${blank}` +
         (unreadable ? ' UNREADABLE' : ''),
       );

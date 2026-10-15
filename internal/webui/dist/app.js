@@ -429,6 +429,17 @@ if (fallbackPresent) fallbackPresent.imageSmoothingEnabled = false;
 let lastPresentAt = 0;
 let presentPending = false;
 
+// Called after every presentation, so a test can look at the screen in the same
+// instant it was shown rather than whenever it happens to poll. A composition
+// that lasted a single refresh is invisible to anything that samples on a
+// timer, and the failure worth catching lives exactly there. It is null unless
+// something set it, so a browser that is not being tested pays nothing.
+let presentHook = null;
+
+// The way in from a test, since a module's bindings are not reachable from the
+// page. Setting the hook is the whole interface.
+window.__adxOnPresent = (fn) => { presentHook = fn; };
+
 function present() {
   lastPresentAt = performance.now();
   presentPending = false;
@@ -441,9 +452,11 @@ function present() {
     // The composed desktop is already the whole screen, so it is drawn from its
     // own texture to the default one and nothing else happens.
     drawQuad(glApi, 0, 0, width, height, width, height, false);
+    if (presentHook) presentHook();
     return;
   }
   fallbackPresent.drawImage(ctx2d, 0, 0);
+  if (presentHook) presentHook();
 }
 
 // A complete redraw is ready. It is shown on the display's next refresh rather
@@ -1303,7 +1316,12 @@ async function drawFrame(buffer) {
     state.batchSize = state.piecesInBatch;
     state.piecesInBatch = 0;
     state.batches++;
-    present();
+    // Shown on the display's next refresh rather than the instant the batch
+    // ended. Presenting here was the same fault this function exists to avoid:
+    // a redraw that finishes between two refreshes is shown immediately, the
+    // next one is shown immediately as well, and the display can only take one
+    // of them - so the screen ends up holding pieces of two different moments.
+    schedulePresent();
   } else {
     state.piecesInBatch++;
   }

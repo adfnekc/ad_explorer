@@ -427,7 +427,6 @@ const fallbackPresent = glApi ? null : el.screen.getContext('2d', { alpha: false
 if (fallbackPresent) fallbackPresent.imageSmoothingEnabled = false;
 
 let lastPresentAt = 0;
-let presentPending = false;
 
 // Called after every presentation, so a test can look at the screen in the same
 // instant it was shown rather than whenever it happens to poll. A composition
@@ -442,7 +441,6 @@ window.__adxOnPresent = (fn) => { presentHook = fn; };
 
 function present() {
   lastPresentAt = performance.now();
-  presentPending = false;
   state.presents++;
   if (glApi) {
     const { gl, desktopTex, width, height } = glApi;
@@ -457,26 +455,6 @@ function present() {
   }
   fallbackPresent.drawImage(ctx2d, 0, 0);
   if (presentHook) presentHook();
-}
-
-// A complete redraw is ready. It is shown on the display's next refresh rather
-// than straight away, and at most once for that refresh.
-//
-// This is the difference between a screen that shows whole desktops and one that
-// shows two of them a fraction of a frame apart. Redraws arrive in bursts — the
-// measured smallest gap between two is 0.4 ms — so showing each one as it was
-// finished asked the display to present the first and then the second within a
-// single refresh, and it can only show one. Coalescing them means the display
-// shows the newest complete desktop once, and never a desktop followed by its
-// own replacement before anything could see it.
-//
-// What it is not is showing the buffer whenever the display happens to refresh:
-// this is only asked for when a batch is whole, so the thing being shown is
-// always a finished composition and never a half-made one.
-function schedulePresent() {
-  if (presentPending) return;
-  presentPending = true;
-  requestAnimationFrame(present);
 }
 
 // A safety net and not the mechanism. The buffer is shown when a batch ends, so
@@ -1316,12 +1294,23 @@ async function drawFrame(buffer) {
     state.batchSize = state.piecesInBatch;
     state.piecesInBatch = 0;
     state.batches++;
-    // Shown on the display's next refresh rather than the instant the batch
-    // ended. Presenting here was the same fault this function exists to avoid:
-    // a redraw that finishes between two refreshes is shown immediately, the
-    // next one is shown immediately as well, and the display can only take one
-    // of them - so the screen ends up holding pieces of two different moments.
-    schedulePresent();
+    // Shown here, at the instant the redraw became whole, and not on the
+    // display's next refresh.
+    //
+    // Waiting for a refresh looks like the way to stop two screens being shown
+    // inside one, and it is the wrong way round, because the surface being shown
+    // is the one being composed into. Between asking for the refresh and getting
+    // it, the next redraw's pieces arrive and are drawn into that same surface,
+    // so what reaches the screen is the end of one redraw and the beginning of
+    // the next. Measured: a redraw that ended with an erase at x 285 was shown
+    // with the following redraw's block at x 6 already in it and the erase it
+    // was still owed not applied, which is two moments in one picture - two
+    // blocks where the desktop has one.
+    //
+    // At batch end the surface is whole, and that instant is the only one at
+    // which showing it is safe. A later moment needs a second surface to show
+    // from, which is a different change from this one.
+    present();
   } else {
     state.piecesInBatch++;
   }

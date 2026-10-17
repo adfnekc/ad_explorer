@@ -1196,33 +1196,15 @@ function handleFrame(buffer) {
     state.lastSeq = seq;
   }
 
-  // A full frame covers the whole desktop, so what is in front of it is
-  // superseded and need not be drawn. What must not happen is dropping a redraw
-  // part of the way through one, and that is what clearing the whole queue did:
-  // a whole desktop is sent as several strips with the flag only on the first,
-  // so a redraw that arrived while another was still being drawn destroyed the
-  // rest of that other one along with the frame that would have shown it. Under
-  // a stream of them - which is what dragging a window is, since enough of the
-  // desktop changes to make every redraw a full one - nothing is ever finished,
-  // and the screen falls to a few frames while the counters keep counting
-  // redraws that arrived.
+  // A full frame covers the whole desktop, so anything still waiting is already
+  // represented by it. Dropping the queue at that point is what stops a slow
+  // decoder from replaying history, and the order of what is left is untouched.
   //
-  // Only whole redraws are dropped: everything up to and including the last one
-  // that ended. A redraw in progress is left alone, so it finishes and is shown.
-  //
-  // Strips of an ordinary redraw are a prefix of the queue and fold away at the
-  // first one that is not, so this costs no second pass over a queue that is
-  // usually one frame long.
+  // The flag is only ever on the first frame of the redraw that carries it, so
+  // the strips of that same redraw are pushed after this and survive.
   if (buffer.byteLength >= HEADER_LEN &&
       (new DataView(buffer).getUint16(2, true) & FLAG_FULL)) {
-    let drop = -1;
-    for (let i = 0; i < drawQueue.length; i++) {
-      if (drawQueue[i].byteLength >= HEADER_LEN &&
-          (new DataView(drawQueue[i]).getUint16(2, true) & FLAG_BATCH_END)) {
-        drop = i;
-      }
-    }
-    if (drop >= 0) drawQueue.splice(0, drop + 1);
+    drawQueue.length = 0;
   }
   drawQueue.push(buffer);
   if (!drawing) pumpDraw();

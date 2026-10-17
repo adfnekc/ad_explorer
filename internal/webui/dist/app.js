@@ -1389,7 +1389,9 @@ function renderInputTelemetry() {
     (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms(最小${state.gapMin.toFixed(1)})` : '') +
     (state.decodeMs ? ` · 解码 ${state.decodeMs.toFixed(1)}ms` : '') +
     (state.composeMs ? ` · 合成 ${state.composeMs.toFixed(1)}ms` : '') +
-    (state.batchCostMs ? ` · 批成本 ${state.batchCostMs.toFixed(1)}ms(峰${state.batchCostMax.toFixed(0)})` : '') +
+    // Shown even before it has been measured, so that seeing it at all says
+    // the page is running this build rather than one the browser kept.
+    ` · 批成本 ${state.batchCostMs.toFixed(1)}ms(峰${state.batchCostMax.toFixed(0)})` +
     (state.continuous ? ' · 变化中' : ' · 静止') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }

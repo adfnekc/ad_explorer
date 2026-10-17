@@ -45,6 +45,9 @@ type Options struct {
 	QualityMin   int
 	QualityMax   int
 	QualityStart int
+	// ForceFullFrames sends every redraw as a whole desktop. It is a
+	// diagnostic, see the field of the same name on a session.
+	ForceFullFrames bool
 	// FrameInterval is the shortest gap between two encoded frames. Zero means
 	// the default. It bounds what one session may spend on encoding, which is
 	// the expensive part: a full 1280x720 frame costs about 32 ms.
@@ -160,14 +163,15 @@ func (r *Registry) Create(ctx context.Context, cfg rdp.Config) (*Session, error)
 	}
 
 	s := newSession(id, cfg, rs, options{
-		idleTimeout:    r.opts.IdleTimeout,
-		qualityMin:     r.opts.QualityMin,
-		qualityMax:     r.opts.QualityMax,
-		qualityStart:   r.opts.QualityStart,
-		frameEvery:     r.opts.FrameInterval,
-		reconnectGrace: r.opts.ReconnectGrace,
-		now:            r.opts.Now,
-		onDone:         r.forget,
+		idleTimeout:     r.opts.IdleTimeout,
+		qualityMin:      r.opts.QualityMin,
+		qualityMax:      r.opts.QualityMax,
+		qualityStart:    r.opts.QualityStart,
+		frameEvery:      r.opts.FrameInterval,
+		forceFullFrames: r.opts.ForceFullFrames,
+		reconnectGrace:  r.opts.ReconnectGrace,
+		now:             r.opts.Now,
+		onDone:          r.forget,
 	})
 
 	r.mu.Lock()

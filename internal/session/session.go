@@ -67,6 +67,13 @@ type options struct {
 	statsEvery   time.Duration
 	idleEvery    time.Duration
 	frameEvery   time.Duration
+	// forceFullFrames sends every redraw as a whole desktop instead of the
+	// regions that changed. It is a diagnostic and not a setting: it decides
+	// between a fault in how changed regions are put back together and one
+	// in how a finished screen is shown, by taking the first out of the path
+	// entirely. It costs bandwidth in proportion to how much of the desktop
+	// is changing, which is why it is off unless an operator asks for it.
+	forceFullFrames bool
 	// reconnectGrace is how long a detached session is kept. A negative value
 	// disables it: the session ends as soon as the browser does.
 	reconnectGrace time.Duration
@@ -899,6 +906,15 @@ func (s *Session) render(update Update) bool {
 	if b := img.Bounds(); b != s.acc.Bounds() {
 		s.acc = stream.NewAccumulator(b, stream.DefaultMaxRects, stream.DefaultFullFraction)
 		s.acc.Add(b)
+	}
+
+	// A whole desktop instead of the regions that changed, when an operator
+	// asked for it. It is added to the accumulator rather than replacing the
+	// regions, so everything downstream - the full-frame threshold, the split
+	// into strips, the full flag - behaves exactly as it does for a redraw that
+	// really did change the whole screen.
+	if s.opts.forceFullFrames {
+		s.acc.Add(s.acc.Bounds())
 	}
 
 	// Which client this frame is for, read before anything is built for it. A

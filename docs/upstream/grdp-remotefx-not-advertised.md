@@ -152,3 +152,37 @@ FreeRDP's `+rfx-mode` command line option sets `0x02` to request video mode.
 
 Point 3 in particular looks like a real defect in its own right, and it is
 reachable the moment RemoteFX is switched on.
+
+## Measured afterwards: advertising alone changes nothing here
+
+This was tried against a Windows 10 LTSC 19041 target after the report was first
+written, and the result argues that the missing call site is not what stands
+between a client and RemoteFX frames.
+
+The server does offer it. Its Demand Active PDU carries the RemoteFX GUID in the
+Bitmap Codecs capability with `codecId` 0x00, which is the server-mode form
+meaning the client picks the id. The client sent back the matching entry:
+
+```
+122f777672bd6344 afb3b73c9c6f7886 03 3100 31000000 01000000 25000000 c0cb 08000000 0100 c1cb 1d000000 01 c0cf
+GUID                             id len=49 length=49 capFlags=1 capsLen=37 ...
+```
+
+That is `codecId` 0x0003, a 49-byte container and the block list, which is what
+FreeRDP writes. Both sides offered RemoteFX, and the server then sent plain
+updates anyway: 3369 fast-path `FASTPATH_UPDATETYPE_BITMAP`, 6 cached, 4 pointer,
+no surface commands, no orders, and `codec.Decompress` never called once.
+
+So on this target the server offers RemoteFX and does not use it. FreeRDP would
+be in the same position, because its decision to use the codec
+(`settings->RemoteFxCodec = guidRemoteFx` when the server's set is parsed) is
+also driven by the server's offer rather than by anything the client can send.
+
+RemoteFX was deprecated and removed from Windows 10 1809 and Server 2019 onward,
+which is the likely reason a capability is still advertised by an operating
+system that no longer encodes with it. That part is an inference; what was
+measured is the list of update types above.
+
+The conclusion for a client is that advertising RemoteFX is worth doing and is
+not sufficient, and that a frame boundary cannot be obtained this way on a
+target that has removed it. The EGFX path is the one that has them now.

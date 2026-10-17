@@ -121,6 +121,13 @@ const state = {
   presents: 0,
   batchGapMs: 0,
   gapMin: 0,
+  // What one frame costs the browser, in the two pieces it is spent in. They are
+  // kept apart because they have different causes and different answers: a decode
+  // is the format's fault and a compose is the compositor's. An average is kept
+  // rather than sampled, because the number that matters is what a drag costs
+  // rather than what one frame did.
+  decodeMs: 0,
+  composeMs: 0,
   continuous: false,
   batchSize: 0,
   piecesInBatch: 0,
@@ -1259,6 +1266,7 @@ async function drawFrame(buffer) {
   }
 
   let bitmap;
+  const decodeStart = performance.now();
   try {
     bitmap = await createImageBitmap(new Blob([payload], { type: mime }));
   } catch (error) {
@@ -1278,7 +1286,16 @@ async function drawFrame(buffer) {
   // been divided into strips to be encoded at once. The flag above still means a
   // whole desktop is on its way, which is what the queue is cleared for; it no
   // longer decides where a piece of one is drawn.
+  const decodedAt = performance.now();
   compose(bitmap, x, y, w, h);
+  // Decode and compose are what a frame costs the browser before anything is
+  // shown, and they are on the critical path one frame at a time: the queue is
+  // drained in order and nothing else is drawn while one is in the middle.
+  state.decodeMs = state.decodeMs === 0 ? decodedAt - decodeStart
+    : state.decodeMs * 0.8 + (decodedAt - decodeStart) * 0.2;
+  const composeMs = performance.now() - decodedAt;
+  state.composeMs = state.composeMs === 0 ? composeMs
+    : state.composeMs * 0.8 + composeMs * 0.2;
   // Presented when the batch is whole, and not before. Presenting on the
   // display's next refresh instead means showing the buffer at whatever moment
   // the display happens to choose, which can be half way through composing the
@@ -1360,6 +1377,8 @@ function renderInputTelemetry() {
     ` · 帧 ${state.framesDrawn}` +
     ` · 批 ${state.batches}/${state.batchSize}片 · 呈现 ${state.presents}` +
     (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms(最小${state.gapMin.toFixed(1)})` : '') +
+    (state.decodeMs ? ` · 解码 ${state.decodeMs.toFixed(1)}ms` : '') +
+    (state.composeMs ? ` · 合成 ${state.composeMs.toFixed(1)}ms` : '') +
     (state.continuous ? ' · 变化中' : ' · 静止') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }

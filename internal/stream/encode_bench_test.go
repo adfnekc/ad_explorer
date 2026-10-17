@@ -26,6 +26,53 @@ func makeDesktop(w, h int) *image.RGBA {
 	return img
 }
 
+// BenchmarkPNGFullFrame is the same worst case as above with the codec the
+// session actually uses. The two are not interchangeable: PNG has no quality to
+// trade and spends its time on per-scanline filtering rather than on a
+// compressor that can be told to hurry up, so an encoder benchmark that uses
+// JPEG says nothing about what a session pays.
+func BenchmarkPNGFullFrame(b *testing.B) {
+	img := makeDesktop(1280, 720)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(img.Pix)))
+
+	for i := 0; i < b.N; i++ {
+		if _, _, err := (PNG{}).Encode(nil, img, 70); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPNGRegion is the same common case as above with PNG.
+func BenchmarkPNGRegion(b *testing.B) {
+	full := makeDesktop(1280, 720)
+	region := full.SubImage(image.Rect(200, 150, 600, 400)).(*image.RGBA)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(region.Pix)))
+
+	for i := 0; i < b.N; i++ {
+		if _, _, err := (PNG{}).Encode(nil, region, 70); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkBuildFullFramePNG is what a session calls when the whole desktop
+// changed and the codec is the one it ships with.
+func BenchmarkBuildFullFramePNG(b *testing.B) {
+	img := makeDesktop(1280, 720)
+	builder := NewBuilder(PNG{})
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		acc := NewAccumulator(img.Bounds(), DefaultMaxRects, DefaultFullFraction)
+		acc.Add(img.Bounds())
+		if _, err := builder.Build(img, acc, 70); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkJPEGFullFrame is the worst case: a whole 1280x720 desktop re-encoded
 // because enough of it changed to make a full repaint cheaper than the parts.
 func BenchmarkJPEGFullFrame(b *testing.B) {

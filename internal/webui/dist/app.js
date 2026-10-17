@@ -1297,19 +1297,22 @@ async function drawFrame(buffer) {
     // Shown here, at the instant the redraw became whole, and not on the
     // display's next refresh.
     //
-    // Waiting for a refresh looks like the way to stop two screens being shown
-    // inside one, and it is the wrong way round, because the surface being shown
-    // is the one being composed into. Between asking for the refresh and getting
-    // it, the next redraw's pieces arrive and are drawn into that same surface,
-    // so what reaches the screen is the end of one redraw and the beginning of
-    // the next. Measured: a redraw that ended with an erase at x 285 was shown
-    // with the following redraw's block at x 6 already in it and the erase it
-    // was still owed not applied, which is two moments in one picture - two
-    // blocks where the desktop has one.
+    // Shown here, at the instant the redraw became whole, and not later.
+    //
+    // Waiting - for the display's next refresh, or for the stream to go quiet -
+    // looks like the way to stop two screens being shown inside one, and it is
+    // the wrong thing to wait for, because the surface being shown is the one
+    // being composed into. Anything that arrives while the wait is running is
+    // drawn into that same surface, so what reaches the screen is the end of one
+    // redraw and the beginning of the next. Measured: a redraw whose last piece
+    // was an erase at x 285 was shown with the following redraw's block at x 6
+    // already in it and the erase it was still owed not applied, which is two
+    // blocks on a desktop that has one.
     //
     // At batch end the surface is whole, and that instant is the only one at
-    // which showing it is safe. A later moment needs a second surface to show
-    // from, which is a different change from this one.
+    // which showing it is safe. Showing it at some chosen later moment needs
+    // somewhere else to show it from, which is a second surface and a different
+    // change.
     present();
   } else {
     state.piecesInBatch++;

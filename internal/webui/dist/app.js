@@ -128,6 +128,15 @@ const state = {
   // rather than what one frame did.
   decodeMs: 0,
   composeMs: 0,
+  // What one redraw costs end to end in the browser: from the first of its
+  // strips being taken off the queue to the moment it is shown. This is the
+  // number that says whether the browser can keep up, because a redraw that
+  // costs longer than the gap between two of them is one that arrives after the
+  // next has - which is what a picture that moves in jumps is made of. An
+  // average would hide it, so the worst recent one is kept too.
+  batchCostMs: 0,
+  batchCostMax: 0,
+  batchStartedAt: 0,
   continuous: false,
   batchSize: 0,
   piecesInBatch: 0,
@@ -1221,6 +1230,7 @@ async function pumpDraw() {
   drawing = true;
   while (drawQueue.length > 0) {
     const buffer = drawQueue.shift();
+    if (state.piecesInBatch === 0) state.batchStartedAt = performance.now();
     try {
       await drawFrame(buffer);
     } catch (error) {
@@ -1379,6 +1389,7 @@ function renderInputTelemetry() {
     (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms(最小${state.gapMin.toFixed(1)})` : '') +
     (state.decodeMs ? ` · 解码 ${state.decodeMs.toFixed(1)}ms` : '') +
     (state.composeMs ? ` · 合成 ${state.composeMs.toFixed(1)}ms` : '') +
+    (state.batchCostMs ? ` · 批成本 ${state.batchCostMs.toFixed(1)}ms(峰${state.batchCostMax.toFixed(0)})` : '') +
     (state.continuous ? ' · 变化中' : ' · 静止') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }

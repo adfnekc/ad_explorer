@@ -1331,9 +1331,18 @@ async function drawFrame(buffer) {
     state.batchSize = state.piecesInBatch;
     state.piecesInBatch = 0;
     state.batches++;
-    // Shown here, at the instant the redraw became whole, and not on the
-    // display's next refresh.
-    //
+    // What this redraw cost the browser, counted from the first of its strips
+    // being taken off the queue. A frame costs about a millisecond, but a redraw
+    // is several of them and they are decoded one at a time, so this is the
+    // number that says whether the browser keeps up: a redraw that costs longer
+    // than the gap to the next one is one that arrives behind it.
+    if (state.batchStartedAt) {
+      const cost = performance.now() - state.batchStartedAt;
+      state.batchCostMs = state.batchCostMs === 0 ? cost
+        : state.batchCostMs * 0.8 + cost * 0.2;
+      if (cost > state.batchCostMax) state.batchCostMax = cost;
+      state.batchStartedAt = 0;
+    }
     // Shown here, at the instant the redraw became whole, and not later.
     //
     // Waiting - for the display's next refresh, or for the stream to go quiet -

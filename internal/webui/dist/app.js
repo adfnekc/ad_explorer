@@ -27,6 +27,12 @@ const FORMAT_RAW = 0x04;
 // The last frame of one complete redraw.
 const FLAG_BATCH_END = 0x0004;
 
+// The first frame of a redraw that covers the whole desktop, which is what the
+// client clears its queue for. It is named here so the header is read the same
+// way wherever it is read: the bit was tested as a bare 0x0001 in the receive
+// path, which is the one place a reader could not tell which flag was meant.
+const FLAG_FULL = 0x0001;
+
 // The format byte decides how the bytes are read, so it is a map rather than a
 // comparison with a default. Treating anything that is not one known format as
 // another known format is how a frame decodes into nothing with no error to
@@ -1193,7 +1199,11 @@ function handleFrame(buffer) {
   // A full frame covers the whole desktop, so anything still waiting is already
   // represented by it. Dropping the queue at that point is what stops a slow
   // decoder from replaying history, and the order of what is left is untouched.
-  if (buffer.byteLength >= HEADER_LEN && (new DataView(buffer).getUint16(2, true) & 0x0001)) {
+  //
+  // The flag is only ever on the first frame of the redraw that carries it, so
+  // the strips of that same redraw are pushed after this and survive.
+  if (buffer.byteLength >= HEADER_LEN &&
+      (new DataView(buffer).getUint16(2, true) & FLAG_FULL)) {
     drawQueue.length = 0;
   }
   drawQueue.push(buffer);

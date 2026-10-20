@@ -91,19 +91,39 @@ what it says rather than by the order it arrived in.
 ## Performance
 
 Encoding is the expensive part of a session, so it is measured rather than
-guessed at. On a Ryzen 7 7840HS, one 1280x720 JPEG frame costs **32 ms** and a
-400x250 region **3.7 ms**, which is roughly 30 ns per pixel. Everything around
-it is noise: merging sixty-four dirty regions costs 28 µs.
+guessed at. On a Ryzen 7 7840HS, one 1280x720 JPEG frame costs **16.4 ms** on one
+core and a 400x250 region **2.1 ms**; dividing a full frame into strips and
+encoding them at once brings the full frame to **3.0 ms**. Everything around it
+is noise: merging sixty-four dirty regions costs 28 µs.
 
 That is why a session does not encode once per update from the server. It holds
-the newest frame and encodes it on a tick — twenty a second by default,
-`-max-fps` to change it — with every region that arrived in between merged in.
-A burst of forty updates becomes three encodes, and the picture a client draws
-is always the desktop as of one moment rather than a mixture of two.
+the newest frame and encodes it on a tick — sixty a second by default, `-max-fps`
+to change it, up to 120 — with every region that arrived in between merged in. A
+burst of forty updates becomes three encodes, and the picture a client draws is
+always the desktop as of one moment rather than a mixture of two.
+
+**JPEG, and not PNG, is the default, and the reason is a measurement that went
+the wrong way.** On a synthetic desktop of flat colour and text, PNG is both
+sharper and smaller than JPEG. A real Windows desktop is not that: it has a
+wallpaper and a gradient and a photograph in it. Measured against a live session,
+PNG cost **200 KB for one redraw and 10 MB/s** at fifty redraws a second, thirty
+times what the synthetic desktop predicted. Every one of those bytes is decoded
+in the browser and becomes garbage afterwards, and the browser was spending
+13.7 ms a redraw pulling them apart against a 28.5 ms gap between redraws, with a
+worst case of 642 ms. The sharpness was real; the session was unusable. JPEG is
+about a tenth of the bytes and the picture is smooth.
 
 Go's JPEG encoder already reads `*image.RGBA` pixels directly, so there is no
 per-pixel interface dispatch to remove; going faster would mean a different
-codec, and WebP would mean cgo or a slower pure Go encoder.
+codec.
+
+## Licence
+
+GPL-3.0. It is not a choice: this program links [grdp][grdp], which is GPL-3.0,
+so it inherits that licence. Shipping a binary means being able to offer the
+source for it.
+
+[grdp]: https://github.com/adfnekc/grdp
 
 ## Layout
 
@@ -125,6 +145,10 @@ docs/                   design spec and the grdp requirements list
 ```sh
 go test ./... -race          # everything, including the concurrency paths
 go test ./internal/wsframe -fuzz=FuzzParseFrame -fuzztime=30s
+
+# A release build: one static binary with no cgo and the version stamped in.
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(git describe --tags --always)" \
+  -o ad_explorer ./cmd/ad_explorer
 ```
 
 The interesting tests are the ones that would have hidden a bug: the frame

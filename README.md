@@ -4,9 +4,15 @@ A self-hosted Web gateway for RDP sessions. A browser talks to a Go process over
 one WebSocket per session; the Go process drives a
 [grdp](https://github.com/adfnekc/grdp) client on the other side.
 
+![A session in progress](docs/screenshots/session.png)
+
 Host addresses and passwords live **in the browser**. The gateway holds a
 password for the length of one session, never writes it anywhere, and never logs
 it. There is no database and no key to manage.
+
+English is the default; the console also speaks Chinese, chosen from the title
+bar and remembered per browser. The screenshots are of the demo desktop, which
+is what `-demo` draws.
 
 ## Try it
 

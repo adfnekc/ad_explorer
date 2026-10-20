@@ -21,11 +21,13 @@ import (
 // and 3.4 against 2.4 for a region. What that buys is that a session which is
 // behind can drop a frame, while a session that is blurry has nothing to drop.
 //
-// Photographic content is where this loses. A full-screen wallpaper is a large
-// PNG and a small JPEG, and a session that spends its time there will send more
-// bytes than it used to. That is a real cost, and it is the one an operator
-// should be able to overrule, which is why the encoder is a setting rather than
-// a constant.
+// Photographic content is where this loses, and a real desktop is photographic
+// more often than the synthetic one these numbers came from. Against a live
+// session a 1280x720 desktop cost 200 KB per redraw as PNG and 10 MB/s at fifty
+// redraws a second, which is thirty times the estimate above; as JPEG it is a
+// tenth of that. That is why JPEG is now what a nil encoder means, and why the
+// numbers above should be read as what they are: a measurement of a desktop
+// made of flat colour, which a photograph is not.
 type PNG struct{}
 
 // Name implements ImageEncoder.

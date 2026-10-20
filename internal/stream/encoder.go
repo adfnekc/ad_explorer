@@ -31,9 +31,19 @@ type ImageEncoder interface {
 
 // JPEG encodes with the standard library.
 //
-// It stays available because it is the right answer for photographic content,
-// where PNG's losslessness costs far more bytes than the detail is worth. It is
-// no longer the default: see PNG for the measurement that moved it.
+// It is the default because of what a real desktop turned out to be. PNG was
+// chosen on a synthetic one - flat colour, window frames, a few lines of text -
+// where it is both sharper and smaller than JPEG. A real Windows desktop is not
+// that: a wallpaper, gradients, a photograph somewhere. Measured against a live
+// session, PNG cost 200 KB for one redraw and 10 MB/s at fifty redraws a second,
+// which is thirty times what the synthetic desktop predicted, and every one of
+// those bytes is decoded in the browser and becomes garbage when it is done.
+//
+// What is bought with the sharpness is a picture the browser has to spend 13.7
+// ms a redraw pulling apart, against a gap of 28.5 ms between redraws, with a
+// worst case of 642 ms - which is what a picture that moves in jumps is made of.
+// The loss is small text being less than perfectly sharp; the loss from PNG was
+// the session being unusable.
 type JPEG struct{}
 
 // Name implements ImageEncoder.
@@ -87,10 +97,11 @@ type Builder struct {
 	seq uint32
 }
 
-// NewBuilder returns a builder using enc. A nil encoder gets JPEG.
+// NewBuilder returns a builder using enc. A nil encoder gets JPEG, which is
+// the default because a real desktop is photographic more often than not.
 func NewBuilder(enc ImageEncoder) *Builder {
 	if enc == nil {
-		enc = PNG{}
+		enc = JPEG{}
 	}
 	return &Builder{enc: enc}
 }

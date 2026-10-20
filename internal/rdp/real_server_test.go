@@ -24,9 +24,9 @@ import (
 // else wrote. It is skipped unless ADX_TEST_RDP_HOST is set, so an ordinary
 // `go test ./...` neither needs a network nor connects to anything by accident.
 //
-//	ADX_TEST_RDP_HOST=192.168.75.130:3389 \
-//	ADX_TEST_RDP_USER=rdptest \
-//	ADX_TEST_RDP_PASS=rdptest \
+//	ADX_TEST_RDP_HOST=203.0.113.10:3389 \
+//	ADX_TEST_RDP_USER=<user> \
+//	ADX_TEST_RDP_PASS=<password> \
 //	go test ./internal/rdp/ -run TestAgainstARealServer -v
 //
 // It reads only: it connects, waits for frames, subscribes to pointer shapes and
@@ -957,7 +957,7 @@ func TestRemotePasteAskSize(t *testing.T) {
 	// to the measurement; that there is one does, or the paste lands nowhere.
 	chord(t, s, []string{"MetaLeft"}, "KeyR")
 	time.Sleep(1500 * time.Millisecond)
-	if err := s.TypeText(`C:\Users\rdptest\Downloads`); err != nil {
+	if err := s.TypeText(`C:\Users\operator\Downloads`); err != nil {
 		t.Fatalf("typing the path: %v", err)
 	}
 	time.Sleep(400 * time.Millisecond)

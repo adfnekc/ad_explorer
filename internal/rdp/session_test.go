@@ -403,13 +403,13 @@ func TestCodeFor(t *testing.T) {
 		// The shapes grdp v0.8.0 actually produced against a real Windows host,
 		// copied from a run rather than invented.
 		{"grpd: unreachable, new wording",
-			errors.New("client: cannot reach the server: dial tcp 192.168.75.130:3389: i/o timeout"),
+			errors.New("client: cannot reach the server: dial tcp 203.0.113.10:3389: i/o timeout"),
 			CodeHostUnreachable},
 		{"grpd: server requires NLA",
 			errors.New("client: the RDP connection failed: x224: RDP security negotiation failed (0x00000005): the server requires CredSSP (NLA)"),
 			CodeNLAFailed},
 		{"grpd: reset during handshake",
-			errors.New("client: the RDP connection failed: x224: transport closed during handshake: read tcp 172.18.226.39:51412->192.168.75.130:3389: read: connection reset by peer"),
+			errors.New("client: the RDP connection failed: x224: transport closed during handshake: read tcp 198.51.100.7:51412->203.0.113.10:3389: read: connection reset by peer"),
 			CodeHostUnreachable},
 	}
 

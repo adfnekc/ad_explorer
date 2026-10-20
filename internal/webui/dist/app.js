@@ -136,6 +136,12 @@ const state = {
   // average would hide it, so the worst recent one is kept too.
   batchCostMs: 0,
   batchCostMax: 0,
+  // What showing the composed surface costs: the blit from it to the canvas
+  // that is on the screen. It is a separate measurement from composing into it,
+  // and on the 2D path it is a whole desktop copied on the processor every time,
+  // which is the one cost in the page that a slow picture would come from.
+  presentMs: 0,
+  presentMax: 0,
   batchStartedAt: 0,
   continuous: false,
   batchSize: 0,
@@ -462,7 +468,8 @@ let presentHook = null;
 window.__adxOnPresent = (fn) => { presentHook = fn; };
 
 function present() {
-  lastPresentAt = performance.now();
+  const presentStart = performance.now();
+  lastPresentAt = presentStart;
   state.presents++;
   if (glApi) {
     const { gl, desktopTex, width, height } = glApi;
@@ -472,10 +479,16 @@ function present() {
     // The composed desktop is already the whole screen, so it is drawn from its
     // own texture to the default one and nothing else happens.
     drawQuad(glApi, 0, 0, width, height, width, height, false);
+    const spent = performance.now() - presentStart;
+    state.presentMs = state.presentMs === 0 ? spent : state.presentMs * 0.8 + spent * 0.2;
+    if (spent > state.presentMax) state.presentMax = spent;
     if (presentHook) presentHook();
     return;
   }
   fallbackPresent.drawImage(ctx2d, 0, 0);
+  const spent = performance.now() - presentStart;
+  state.presentMs = state.presentMs === 0 ? spent : state.presentMs * 0.8 + spent * 0.2;
+  if (spent > state.presentMax) state.presentMax = spent;
   if (presentHook) presentHook();
 }
 
@@ -1401,6 +1414,8 @@ function renderInputTelemetry() {
     // Shown even before it has been measured, so that seeing it at all says
     // the page is running this build rather than one the browser kept.
     ` · 批成本 ${state.batchCostMs.toFixed(1)}ms(峰${state.batchCostMax.toFixed(0)})` +
+    ` · 呈现耗时 ${state.presentMs.toFixed(1)}ms(峰${state.presentMax.toFixed(0)})` +
+    ` · ${el.screen.dataset.compositor || '?'}` +
     (state.continuous ? ' · 变化中' : ' · 静止') +
     (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
 }

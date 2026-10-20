@@ -55,6 +55,19 @@ button { font: inherit; color: inherit; }
   background: linear-gradient(90deg, #0a246a 0%, #3a6ea5 55%, #a6caf0 100%);
 }
 .titlebar .spacer { flex: 1; }
+/* The language picker sits on the title bar, which is the one place in this
+   interface that is blue rather than grey, so it gets the same small controls
+   the caption buttons have instead of a full-width form field. */
+.titlebar select {
+  margin-right: 6px;
+  padding: 0 2px;
+  height: 15px;
+  font-size: 11px;
+  font-weight: 400;
+  background: var(--face);
+  box-shadow: var(--raised);
+  color: #000;
+}
 .titlebar .captions { display: flex; gap: 2px; }
 .titlebar .captions button {
   width: 18px;

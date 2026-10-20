@@ -10,6 +10,10 @@
 
 // ---------------------------------------------------------------- constants
 
+// Localised text. Every sentence the page builds itself goes through this, so
+// that the dictionary in i18n.js is the only place a translation lives.
+const t = (key, vars) => ADX_I18N.t(key, vars);
+
 const HOSTS_KEY = 'adx_hosts_v1';
 
 // Binary frame header, little endian:
@@ -78,6 +82,7 @@ const state = {
   selectedHostId: null,
   editingHostId: null,
   session: null, // { id, name, width, height }
+  lastStats: null, // the most recent session.stats, so it can be redrawn
   socket: null,
   clipboard: [],
   // localClipboard is what the local clipboard last held, and remoteClipboard
@@ -281,14 +286,14 @@ let glApi = null;
 function buildGL() {
   const gl = el.screen.getContext('webgl', GL_OPTIONS)
     || el.screen.getContext('experimental-webgl', GL_OPTIONS);
-  if (!gl) return { fail: '这个浏览器没有提供 WebGL 上下文' };
+  if (!gl) return { fail: t('gl.noContext') };
 
   const compile = (type, source) => {
     const sh = gl.createShader(type);
     gl.shaderSource(sh, source);
     gl.compileShader(sh);
     if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      return { fail: `着色器编译失败：${gl.getShaderInfoLog(sh)}` };
+      return { fail: t('gl.shaderCompile', { log: gl.getShaderInfoLog(sh) }) };
     }
     return sh;
   };
@@ -296,14 +301,14 @@ function buildGL() {
   if (vs && vs.fail) return vs;
   const fs = compile(gl.FRAGMENT_SHADER, FS);
   if (fs && fs.fail) return fs;
-  if (!vs || !fs) return { fail: '着色器没有编译出来' };
+  if (!vs || !fs) return { fail: t('gl.shaderMissing') };
 
   const program = gl.createProgram();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    return { fail: `着色器程序链接失败：${gl.getProgramInfoLog(program)}` };
+    return { fail: t('gl.programLink', { log: gl.getProgramInfoLog(program) }) };
   }
   gl.useProgram(program);
 
@@ -342,7 +347,7 @@ function buildGL() {
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, desktopTex, 0);
   const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
-    return { fail: `离屏缓冲不可用（0x${status.toString(16)}）` };
+    return { fail: t('gl.fboUnavailable', { status: status.toString(16) }) };
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
@@ -416,13 +421,13 @@ const flipRegion = params.get('flipy') !== '1';
 // WebGL here" and "WebGL here, and this is what it objected to" are different
 // problems with different answers, and a page that only says the first sends the
 // next reader looking in the wrong place.
-let glWhy = forcedSoftware ? '被 ?compositor=canvas2d 要求使用软件路径' : null;
+let glWhy = forcedSoftware ? t('gl.forcedSoftware') : null;
 if (!forcedSoftware) {
   const built = buildGL();
   if (built && built.gl) {
     glApi = built;
   } else {
-    glWhy = built && built.fail ? built.fail : '未知原因';
+    glWhy = built && built.fail ? built.fail : t('gl.unknownReason');
   }
 }
 
@@ -641,7 +646,7 @@ function loadHosts() {
     // A corrupt store must not stop the console from opening; it is reported
     // and replaced on the next save.
     state.hosts = [];
-    note('主机列表无法解析，已忽略。', 'error');
+    note(t('hosts.unreadable'), 'error');
   }
 }
 
@@ -669,7 +674,7 @@ function renderHosts() {
     const p = document.createElement('div');
     p.className = 'label';
     p.style.padding = '6px';
-    p.textContent = '还没有主机。点「新建」添加一台，凭据只保存在这台浏览器里。';
+    p.textContent = t('hosts.empty');
     el.hostList.append(p);
     return;
   }
@@ -686,7 +691,7 @@ function renderHosts() {
     name.textContent = host.name || host.host;
     const where = document.createElement('div');
     where.className = 'where';
-    where.textContent = `${host.host}:${host.port || 3389} · ${host.user || '未填账号'}`;
+    where.textContent = `${host.host}:${host.port || 3389} · ${host.user || t('hosts.noAccount')}`;
     left.append(name, where);
 
     const rtt = document.createElement('div');
@@ -773,7 +778,7 @@ el.hostForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const size = sizeFromForm();
   if (!size) {
-    note('自定义分辨率要在 200 到 8192 之间。', 'error');
+    note(t('host.sizeOutOfRange'), 'error');
     return;
   }
   const { width, height } = size;
@@ -789,7 +794,7 @@ el.hostForm.addEventListener('submit', (event) => {
     width,
     height,
   };
-  if (!entry.host) { note('地址不能为空。', 'error'); return; }
+  if (!entry.host) { note(t('host.addressRequired'), 'error'); return; }
 
   const index = state.hosts.findIndex((h) => h.id === entry.id);
   if (index >= 0) state.hosts[index] = entry; else state.hosts.push(entry);
@@ -820,7 +825,7 @@ async function connect(host) {
   state.sessionEnded = false;
   state.frameCount = 0;
   state.graceMs = 0;
-  el.sessionLabel.textContent = `连接 ${host.name || host.host} …`;
+  el.sessionLabel.textContent = t('session.connecting', { name: host.name || host.host });
 
   let created;
   try {
@@ -838,7 +843,7 @@ async function connect(host) {
       }),
     });
   } catch (error) {
-    el.sessionLabel.textContent = '未连接';
+    el.sessionLabel.textContent = t('session.notConnected');
     noteError(error.code, error.message);
     return;
   }
@@ -861,7 +866,7 @@ function openSocket(id, reconnecting) {
     // A reconnect that got through clears the retry budget, so the next blip
     // gets the full grace again.
     cancelReconnect();
-    if (reconnecting) note('已重新连接。');
+    if (reconnecting) note(t('session.reconnected'));
 
     // The gateway remembers an offer for as long as the session lives, but the
     // File handles behind it belong to the page. After a reload the browser has
@@ -869,7 +874,7 @@ function openSocket(id, reconnecting) {
     // would ask for bytes that can never arrive. An offer the browser cannot
     // serve is withdrawn rather than left standing.
     if (state.offered.size === 0) send({ type: 'files.clear' });
-    el.sessionLabel.textContent = `已连接 ${state.session.name}`;
+    el.sessionLabel.textContent = t('session.connected', { name: state.session.name });
     el.cad.disabled = false;
     el.fullscreen.disabled = false;
     el.disconnect.disabled = false;
@@ -908,16 +913,16 @@ function openSocket(id, reconnecting) {
     // that no longer exists can only fail, so this one is final.
     if (event.code === 4002) {
       state.sessionEnded = true;
-      el.sessionLabel.textContent = '连接已结束：会话已不存在';
-      noteError('session_gone', '会话已经结束；请重新连接主机。');
+      el.sessionLabel.textContent = t('session.endedGone');
+      noteError('session_gone', t('session.endedGoneNote'));
       endSession();
       return;
     }
 
     if (state.deliberateClose || state.sessionEnded) {
       const reason = event.reason ? `：${event.reason}` : '';
-      el.sessionLabel.textContent = `连接已结束 (${event.code})${reason}`;
-      note(`会话结束，代码 ${event.code}${reason}`);
+      el.sessionLabel.textContent = t('session.endedCode', { code: event.code, reason });
+      note(t('session.endedNote', { code: event.code, reason }));
       endSession();
       return;
     }
@@ -930,7 +935,7 @@ function openSocket(id, reconnecting) {
   });
 
   socket.addEventListener('error', () => {
-    noteError('socket_error', 'WebSocket 出错，连接可能已断开。');
+    noteError('socket_error', t('session.socketError'));
   });
 }
 
@@ -959,7 +964,7 @@ function onAuthExpired() {
   // looking desktop behind the logon form — the one case where the picture is
   // most certainly stale, and it was the one that kept its colour.
   renderDisconnectButton();
-  el.loginStatus.textContent = '控制台登录已过期，请重新输入口令。';
+  el.loginStatus.textContent = t('session.expired');
   showLogin();
 }
 
@@ -975,8 +980,8 @@ function scheduleReconnect() {
   // A gateway with the grace turned off will not hold the session, so there is
   // nothing to wait for.
   if (state.graceMs <= 0) {
-    el.sessionLabel.textContent = '连接已断开，会话已结束';
-    noteError('session_gone', '连接已断开，且网关不会保留会话；请重新连接主机。');
+    el.sessionLabel.textContent = t('session.dropped');
+    noteError('session_gone', t('session.droppedNoGrace'));
     endSession();
     return;
   }
@@ -985,26 +990,26 @@ function scheduleReconnect() {
   if (!state.reconnectDeadline) {
     state.reconnectDeadline = now + state.graceMs;
     state.reconnectDelay = RECONNECT_MIN_MS;
-    note('连接断开，正在尝试重新连接 …');
+    note(t('session.reconnecting'));
   }
   if (now >= state.reconnectDeadline) {
     // 4001 throughout means something else was holding the session the whole
     // time, which is worth saying rather than reporting a generic failure: the
     // operator's other tab is the likely answer, not a broken gateway.
     if (state.lastCloseCode === 4001) {
-      el.sessionLabel.textContent = '连接已结束：会话被占用';
+      el.sessionLabel.textContent = t('session.endedBusy');
       noteError('session_in_use',
-        '重连期间这个会话一直被另一个浏览器占用。一个会话只能有一个画面；请关掉另一个标签页后重新连接。');
+        t('session.endedBusyNote'));
     } else {
-      el.sessionLabel.textContent = '连接已断开，会话已结束';
-      noteError('session_gone', '重连失败，会话已结束；请重新连接主机。');
+      el.sessionLabel.textContent = t('session.dropped');
+      noteError('session_gone', t('session.reconnectFailed'));
     }
     endSession();
     return;
   }
 
   const id = state.session.id;
-  el.sessionLabel.textContent = '连接断开，正在重新连接 …';
+  el.sessionLabel.textContent = t('session.reconnecting');
   const delay = state.reconnectDelay;
   state.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
   state.reconnectTimer = setTimeout(() => {
@@ -1062,7 +1067,7 @@ function disconnect() {
   cancelReconnect();
   // The label is cleared here rather than by the close handler, because the
   // close that follows a deliberate disconnect is deliberately ignored.
-  el.sessionLabel.textContent = '未连接';
+  el.sessionLabel.textContent = t('session.notConnected');
   if (state.socket) {
     send({ type: 'session.close' });
     state.socket.close();
@@ -1094,13 +1099,20 @@ function handleControl(message) {
         el.resolution.prepend(option);
       }
       el.resolution.value = size;
-      note(`远端桌面 ${message.width}×${message.height}，协议 ${message.protocol}`);
+      note(t('session.remoteDesktop', { width: message.width, height: message.height, protocol: message.protocol }));
       break;
 
     case 'session.stats':
+      // Kept so that a language change can redraw it: the dictionary owns the
+      // words, but this line is assembled from numbers that only arrive here.
+      state.lastStats = message;
       el.stats.textContent =
-        `${message.fps.toFixed(0)} fps · ${message.kbps.toFixed(0)} KB/s · 质量 ${message.quality}` +
-        (message.dropped ? ` · 丢弃 ${message.dropped}` : '') +
+        t('stats.line', {
+          fps: message.fps.toFixed(0),
+          kbps: message.kbps.toFixed(0),
+          quality: message.quality,
+        }) +
+        (message.dropped ? t('stats.dropped', { n: message.dropped }) : '') +
         (state.rtt !== null ? ` · ${state.rtt}ms` : '');
       renderInputTelemetry();
       break;
@@ -1114,7 +1126,7 @@ function handleControl(message) {
       // comes, so it is reported rather than left as an unhandled rejection
       // nobody will ever see.
       answerRangeRequest(message).catch((error) => {
-        noteError('file_transfer', `无法提供 ${message.name} 的数据：${error.message}`);
+        noteError('file_transfer', t('files.readFailed', { name: message.name, error: error.message }));
       });
       break;
 
@@ -1161,14 +1173,14 @@ function handleControl(message) {
 
     case 'error':
       noteError(message.code, message.message);
-      if (message.code === 'unsupported') el.capability.textContent = '部分功能未就绪';
+      if (message.code === 'unsupported') el.capability.textContent = t('capability.partial');
       break;
 
     case 'session.closed':
       // The gateway has ended the session, so the close that follows is final:
       // retrying would just fail against a session that no longer exists.
       state.sessionEnded = true;
-      note(`服务端关闭会话：${message.reason}` +
+      note(t('session.serverClosed', { reason: message.reason }) +
         (message.message ? `（${message.message}）` : ''));
       break;
 
@@ -1179,7 +1191,7 @@ function handleControl(message) {
       break;
 
     default:
-      note(`未知控制消息 ${message.type}`);
+      note(t('control.unknown', { type: message.type }));
   }
 }
 
@@ -1247,7 +1259,7 @@ async function pumpDraw() {
     try {
       await drawFrame(buffer);
     } catch (error) {
-      noteError('frame_failed', `画面绘制失败：${error.message}`);
+      noteError('frame_failed', t('frame.drawFailed', { error: error.message }));
     }
   }
   drawing = false;
@@ -1283,7 +1295,7 @@ async function drawFrame(buffer) {
   const payload = new Uint8Array(buffer, HEADER_LEN);
   const mime = FORMAT_MIMES.get(format);
   if (!mime) {
-    noteError('decode_failed', `画面使用了无法识别的格式 0x${format.toString(16)}。`);
+    noteError('decode_failed', t('frame.unknownFormat', { format: format.toString(16) }));
     send({ type: 'session.repaint' });
     return;
   }
@@ -1293,7 +1305,7 @@ async function drawFrame(buffer) {
   try {
     bitmap = await createImageBitmap(new Blob([payload], { type: mime }));
   } catch (error) {
-    noteError('decode_failed', `画面解码失败：${error.message}`);
+    noteError('decode_failed', t('frame.decodeFailed', { error: error.message }));
     // A region the server has sent is one it now believes the client holds, and
     // it will not send it again, so a frame that could not be decoded would
     // leave that part of the desktop wrong until the page was reloaded. Asking
@@ -1386,8 +1398,8 @@ async function drawFrame(buffer) {
     // software path and a torn picture on the hardware one are not the same
     // fault, and there is no other way to tell them apart from outside the page.
     note(glApi
-      ? '收到第一帧画面；合成走 WebGL。'
-      : `收到第一帧画面；合成走 2D 画布（${glWhy}）。`);
+      ? t('compositor.webgl')
+      : t('compositor.canvas2d', { why: glWhy }));
   }
 }
 
@@ -1398,27 +1410,64 @@ async function drawFrame(buffer) {
 // is refusing input because its session is not signed in. The counters separate
 // the first from the other two, and the reported position settles the rest.
 function renderInputTelemetry() {
-  const t = el.inputTelemetry;
-  if (!t) return;
+  const line = el.inputTelemetry;
+  if (!line) return;
   const s = state.sent;
-  t.textContent =
-    `↑ 移动 ${s.move} · 点击 ${s.button} · 按键 ${s.key} · ` +
-    `滚轮 ${s.wheel}刻度/${s.wheelEvents}次` +
-    (state.remoteCursor ? ` · 远端光标 ${state.remoteCursor[0]},${state.remoteCursor[1]}` : ' · 远端光标 未回报') +
-    (state.systemCursor === null ? '' : ` · 光标类型 0x${state.systemCursor.toString(16)}`) +
-    ` · 帧 ${state.framesDrawn}` +
-    ` · 批 ${state.batches}/${state.batchSize}片 · 呈现 ${state.presents}` +
-    (state.batchGapMs ? ` · 批间隔 ${state.batchGapMs.toFixed(1)}ms(最小${state.gapMin.toFixed(1)})` : '') +
-    (state.decodeMs ? ` · 解码 ${state.decodeMs.toFixed(1)}ms` : '') +
-    (state.composeMs ? ` · 合成 ${state.composeMs.toFixed(1)}ms` : '') +
+  line.textContent =
+    `↑ ${t('telemetry.move', { n: s.move })} · ${t('telemetry.click', { n: s.button })} · ` +
+    `${t('telemetry.key', { n: s.key })} · ` +
+    t('telemetry.wheel', { ticks: s.wheel, events: s.wheelEvents }) +
+    (state.remoteCursor
+      ? ' · ' + t('telemetry.remoteCursor', { x: state.remoteCursor[0], y: state.remoteCursor[1] })
+      : ' · ' + t('telemetry.noRemoteCursor')) +
+    (state.systemCursor === null ? '' : ' · ' + t('telemetry.cursorType', { hex: state.systemCursor.toString(16) })) +
+    ' · ' + t('telemetry.frames', { n: state.framesDrawn }) +
+    ' · ' + t('telemetry.batches', { n: state.batches, pieces: state.batchSize, shown: state.presents }) +
+    (state.batchGapMs
+      ? ' · ' + t('telemetry.batchGap', { ms: state.batchGapMs.toFixed(1), min: state.gapMin.toFixed(1) })
+      : '') +
+    (state.decodeMs ? ' · ' + t('telemetry.decode', { ms: state.decodeMs.toFixed(1) }) : '') +
+    (state.composeMs ? ' · ' + t('telemetry.compose', { ms: state.composeMs.toFixed(1) }) : '') +
     // Shown even before it has been measured, so that seeing it at all says
     // the page is running this build rather than one the browser kept.
-    ` · 批成本 ${state.batchCostMs.toFixed(1)}ms(峰${state.batchCostMax.toFixed(0)})` +
-    ` · 呈现耗时 ${state.presentMs.toFixed(1)}ms(峰${state.presentMax.toFixed(0)})` +
+    ' · ' + t('telemetry.batchCost', { ms: state.batchCostMs.toFixed(1), peak: state.batchCostMax.toFixed(0) }) +
+    ' · ' + t('telemetry.presentCost', { ms: state.presentMs.toFixed(1), peak: state.presentMax.toFixed(0) }) +
     ` · ${el.screen.dataset.compositor || '?'}` +
-    (state.continuous ? ' · 变化中' : ' · 静止') +
-    (state.seqGaps ? ` · 丢帧 ${state.seqGaps}` : '');
+    (state.continuous ? ' · ' + t('telemetry.moving') : ' · ' + t('telemetry.still')) +
+    (state.seqGaps ? ' · ' + t('telemetry.gaps', { n: state.seqGaps }) : '');
 }
+
+// A language change has to reach the parts of the page app.js writes itself.
+// The dictionary fills in every element marked data-i18n, which includes the
+// session label and the statistics pill - so those are set back to their
+// dictionary value, and this is what puts the live reading back on top.
+ADX_I18N.onChange(() => {
+  renderInputTelemetry();
+  renderHosts();
+  renderDisconnectButton();
+  renderClipboard();
+  if (state.sessionEnded) {
+    el.sessionLabel.textContent = t('session.dropped');
+  } else if (state.session) {
+    el.sessionLabel.textContent = t('session.connected', { name: state.session.name });
+  } else {
+    el.sessionLabel.textContent = t('session.notConnected');
+  }
+  setImmersive(document.body.classList.contains('immersive'));
+  if (state.lastStats) {
+    const m = state.lastStats;
+    el.stats.textContent =
+      t('stats.line', {
+        fps: m.fps.toFixed(0),
+        kbps: m.kbps.toFixed(0),
+        quality: m.quality,
+      }) +
+      (m.dropped ? t('stats.dropped', { n: m.dropped }) : '') +
+      (state.rtt !== null ? ` · ${state.rtt}ms` : '');
+  } else {
+    el.stats.textContent = t('stats.idle');
+  }
+});
 
 // ---------------------------------------------------------------- files
 
@@ -1435,7 +1484,7 @@ function offerFiles(files) {
     files: list.map((f) => ({ name: f.name, size: f.size })),
   });
   renderOffered();
-  note(`已分享 ${list.length} 个文件；在远端按 Ctrl+V 即可粘贴。`);
+  note(t('files.shared', { n: list.length }));
 }
 
 function renderOffered() {
@@ -1444,7 +1493,7 @@ function renderOffered() {
     const p = document.createElement('div');
     p.className = 'label';
     p.style.padding = '4px 6px';
-    p.textContent = '把文件拖到画面上，或点「分享文件」，就能在远端粘贴。';
+    p.textContent = t('files.dropHint');
     el.offered.append(p);
     return;
   }
@@ -1471,7 +1520,7 @@ function renderOffered() {
 async function answerRangeRequest(message) {
   const file = state.offered.get(message.name);
   if (!file) {
-    noteError('file_transfer', `远端请求了未分享的文件 ${message.name}`);
+    noteError('file_transfer', t('files.notShared', { name: message.name }));
     return;
   }
   const end = Math.min(message.offset + message.length, file.size);
@@ -1530,7 +1579,7 @@ function renderRemoteFiles(files) {
   const head = document.createElement('div');
   head.className = 'label';
   head.style.padding = '6px 6px 2px';
-  head.textContent = '远端剪贴板上的文件';
+  head.textContent = t('files.remoteHeading');
   el.remoteFiles.append(head);
 
   for (const file of files) {
@@ -1542,16 +1591,16 @@ function renderRemoteFiles(files) {
     name.title = file.name;
     const size = document.createElement('span');
     size.className = 'where';
-    size.textContent = file.isDir ? '目录' : humanSize(file.size);
+    size.textContent = file.isDir ? t('files.folder') : humanSize(file.size);
 
     const button = document.createElement('button');
     button.className = 'act';
     button.type = 'button';
-    button.textContent = file.isDir ? '—' : '下载';
+    button.textContent = file.isDir ? t('files.none') : t('files.download');
     button.disabled = file.isDir;
     button.addEventListener('click', () => {
       send({ type: 'files.get', index: file.index });
-      note(`开始下载 ${file.name}`);
+      note(t('files.downloading', { name: file.name }));
     });
 
     row.append(name, size, button);
@@ -1589,7 +1638,7 @@ function saveDownload(transfer) {
   link.download = transfer.name;
   link.click();
   URL.revokeObjectURL(url);
-  note(`已保存 ${transfer.name}（${humanSize(transfer.size)}）`);
+  note(t('files.saved', { name: transfer.name, size: humanSize(transfer.size) }));
 }
 
 function humanSize(bytes) {
@@ -1622,14 +1671,14 @@ document.addEventListener('paste', (event) => {
   if (!files || files.length === 0) return;
   event.preventDefault();
   offerFiles(files);
-  note(`已从剪贴板分享 ${files.length} 个文件；在远端按 Ctrl+V 即可粘贴。`);
+  note(t('files.sharedFromClipboard', { n: files.length }));
 });
 
 el.clearOffer.addEventListener('click', () => {
   state.offered.clear();
   send({ type: 'files.clear' });
   renderOffered();
-  note('已撤销分享的文件。');
+  note(t('files.withdrawn'));
 });
 
 // Dropping files on the session shares them, which is what dropping a file on a
@@ -1923,7 +1972,7 @@ function browserShortcut(event) {
 // describes something that cannot happen.
 function renderDisconnectButton() {
   const live = Boolean(state.session);
-  el.disconnect.textContent = live ? '断开' : '连接';
+  el.disconnect.textContent = live ? t('session.disconnect') : t('session.connect');
   el.disconnect.classList.toggle('primary', !live);
   el.disconnect.disabled = false;
   // One place decides whether a session is live, so it is also the one place
@@ -1958,16 +2007,16 @@ $('immersiveExit').addEventListener('click', () => setImmersive(false));
 function setImmersive(on) {
   document.body.classList.toggle('immersive', on);
   $('immersiveExit').hidden = !on;
-  el.fullscreen.textContent = on ? '退出全屏' : '全屏';
+  el.fullscreen.textContent = on ? t('session.exitFullscreen') : t('session.fullscreen');
 }
 
 el.resolution.addEventListener('change', () => {
   const [width, height] = el.resolution.value.split('x').map(Number);
   if (!send({ type: 'session.resize', width, height })) {
-    note('会话已断开，无法改变分辨率。', 'error');
+    note(t('resolution.ended'), 'error');
     return;
   }
-  note(`已请求 ${width}×${height}；服务器可能就近取一个它支持的尺寸。`);
+  note(t('resolution.requested', { width, height }));
 });
 
 el.quality.addEventListener('input', () => {
@@ -1992,7 +2041,7 @@ function renderClipboard() {
   if (state.clipboard.length === 0) {
     const p = document.createElement('div');
     p.className = 'label';
-    p.textContent = '远端复制的内容会出现在这里，由你决定要不要放进本机剪贴板。';
+    p.textContent = t('clipboard.empty');
     el.clipboard.append(p);
     return;
   }
@@ -2013,16 +2062,16 @@ function renderClipboard() {
     const copy = document.createElement('button');
     copy.className = 'act';
     copy.type = 'button';
-    copy.textContent = '复制到本机';
+    copy.textContent = t('clipboard.copyToLocal');
     copy.addEventListener('click', async () => {
       // Writing the local clipboard needs a user gesture, which is why it
       // happens here and not when the text arrived.
       try {
         await navigator.clipboard.writeText(entry.text);
-        copy.textContent = '已复制';
-        setTimeout(() => { copy.textContent = '复制到本机'; }, 1200);
+        copy.textContent = t('clipboard.copied');
+        setTimeout(() => { copy.textContent = t('clipboard.copyToLocal'); }, 1200);
       } catch (error) {
-        noteError('clipboard_denied', `无法写入本机剪贴板：${error.message}`);
+        noteError('clipboard_denied', t('clipboard.copyFailed', { error: error.message }));
       }
     });
     meta.append(when, grow, copy);
@@ -2042,7 +2091,7 @@ document.addEventListener('paste', (event) => {
   const text = event.clipboardData && event.clipboardData.getData('text');
   if (!text) return;
   send({ type: 'clipboard.set', text });
-  note('已发送本机剪贴板到远端。');
+  note(t('clipboard.sent'));
 });
 
 el.sendClipboard.addEventListener('click', () => {
@@ -2128,7 +2177,7 @@ el.requestClipboard.addEventListener('click', () => {
 el.loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   el.loginButton.disabled = true;
-  el.loginStatus.textContent = '验证中…';
+  el.loginStatus.textContent = t('login.verifying');
   try {
     await api('/api/login', { method: 'POST', body: JSON.stringify({ password: el.password.value }) });
     state.unauthorized = false;
@@ -2138,12 +2187,12 @@ el.loginForm.addEventListener('submit', async (event) => {
   } catch (error) {
     if (error.code === 'login_locked') {
       const retry = error.body.retryAfter || 0;
-      el.loginStatus.textContent = `尝试次数过多，请等 ${Math.ceil(retry / 60)} 分钟后再试。`;
+      el.loginStatus.textContent = t('login.tooMany', { minutes: Math.ceil(retry / 60) });
     } else {
       const left = error.body.attemptsLeft;
       el.loginStatus.textContent = left === undefined
         ? error.message
-        : `密码错误，还能试 ${left} 次。`;
+        : t('login.wrong', { left });
     }
   } finally {
     el.loginButton.disabled = false;
@@ -2221,10 +2270,10 @@ async function resumeSession() {
   if (state.graceMs <= 0) {
     // The gateway will not hold this session, so resuming it is theatre: the
     // next drop would end it anyway.
-    note('网关不会保留断开的会话，恢复后一旦断开就会结束。');
+    note(t('session.noGrace'));
   }
-  el.sessionLabel.textContent = `正在恢复 ${mine.name} …`;
-  note(`页面重新载入，正在恢复 ${mine.name} 的画面。`);
+  el.sessionLabel.textContent = t('session.restoring', { name: mine.name });
+  note(t('session.restoringNote', { name: mine.name }));
   openSocket(id, true);
   return true;
 }
